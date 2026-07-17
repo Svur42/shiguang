@@ -3,3 +3,4 @@
 .pipcache/
 __pycache__/
 *.egg-info/
+tests/fixtures/*.cr2
