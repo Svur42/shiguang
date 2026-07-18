@@ -29,3 +29,15 @@ def test_scan_folder_skips_unreadable_file_without_crashing(tmp_path):
     rows = db.list_photos(conn)
     assert rows[0]["filename"] == "broken.jpg"
     assert rows[0]["thumbnail"] is None
+
+
+def test_scan_folder_reports_progress_for_each_file(tmp_path):
+    Image.new("RGB", (100, 100)).save(tmp_path / "a.jpg")
+    Image.new("RGB", (100, 100)).save(tmp_path / "b.jpg")
+    Image.new("RGB", (100, 100)).save(tmp_path / "c.jpg")
+
+    conn = db.connect(tmp_path / "test.sqlite")
+    calls = []
+    scanner.scan_folder(conn, tmp_path, progress_callback=lambda done, total: calls.append((done, total)))
+
+    assert calls == [(1, 3), (2, 3), (3, 3)]

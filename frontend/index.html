@@ -5,7 +5,8 @@
 <title>拾光 ShiGuang</title>
 <style>
   body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif; margin: 0; background: #ffffff; color: #1d1d1f; }
-  #toolbar { padding: 16px 20px; border-bottom: 1px solid #d2d2d7; }
+  #toolbar { padding: 16px 20px; border-bottom: 1px solid #d2d2d7; display: flex; align-items: center; gap: 12px; }
+  #status { font-size: 13px; color: #6e6e73; }
   #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; padding: 20px; }
   .card { border: 2px solid #d2d2d7; border-radius: 12px; overflow: hidden; background: #f5f5f7; }
   .card img { width: 100%; height: 120px; object-fit: cover; display: block; background: #e8e8ed; }
@@ -17,6 +18,7 @@
 <body>
   <div id="toolbar">
     <button id="btn-import">选择文件夹导入</button>
+    <span id="status"></span>
   </div>
   <div id="grid"></div>
 
@@ -43,18 +45,37 @@
       });
     }
 
+    function setStatus(text) {
+      document.getElementById('status').textContent = text;
+    }
+
+    // Python后端扫描过程中会周期性调用这个函数推送进度，不是前端自己猜的
+    window.onImportProgress = function (done, total) {
+      setStatus(`正在导入... ${done}/${total}`);
+    };
+
     async function loadPhotos() {
       const photos = await window.pywebview.api.list_photos();
       renderPhotos(photos);
     }
 
     document.getElementById('btn-import').addEventListener('click', async () => {
+      const btn = document.getElementById('btn-import');
+      btn.disabled = true;
+      setStatus('正在导入，请稍候...');
+      const startedAt = performance.now();
+
       const result = await window.pywebview.api.choose_folder_and_scan();
+
+      btn.disabled = false;
       if (result.error) {
+        setStatus('导入失败');
         alert('导入失败：\n' + result.error);
         return;
       }
       renderPhotos(result.photos);
+      const seconds = ((performance.now() - startedAt) / 1000).toFixed(1);
+      setStatus(`导入完成：本次新增 ${result.imported} 张，共 ${result.photos.length} 张，用时 ${seconds} 秒`);
     });
 
     window.addEventListener('pywebviewready', loadPhotos);
