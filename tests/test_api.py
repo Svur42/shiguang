@@ -173,3 +173,82 @@ def test_choose_folder_and_scan_returns_error_field_instead_of_raising(tmp_path,
 
     assert result["error"] is not None
     assert "RuntimeError" in result["error"]
+
+
+def test_list_photos_includes_folder_and_placeholder_fields(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path="/card/A/x.jpg", folder="/card/A", filename="x.jpg", thumbnail=b"\xff\xd8\xff")
+    api = _make_api(conn)
+
+    p = api.list_photos()[0]
+
+    # 字段名必须和原型读取处一致：原型读 p.cam / p.shutter / p.aperture / p.focal
+    assert p["folder"] == "/card/A"
+    assert p["tier"] is None
+    for key in ("day", "time", "burst", "iso", "cam", "shutter", "aperture", "focal", "size"):
+        assert key in p
+
+
+def test_set_tier_persists(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path="/fake/a.jpg", folder="/fake", filename="a.jpg", thumbnail=b"a")
+    api = _make_api(conn)
+    photo_id = api.list_photos()[0]["id"]
+
+    api.set_tier(photo_id, "fix")
+
+    assert api.list_photos()[0]["tier"] == "fix"
+
+
+def test_list_folders_returns_real_folders(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path="/card/A/1.jpg", folder="/card/A", filename="1.jpg", thumbnail=b"1")
+    db.insert_photo(conn, path="/card/B/2.jpg", folder="/card/B", filename="2.jpg", thumbnail=b"2")
+    api = _make_api(conn)
+
+    folders = api.list_folders()
+
+    assert {f["folder"] for f in folders} == {"/card/A", "/card/B"}
+    by_path = {f["folder"]: f["name"] for f in folders}
+    assert by_path == {"/card/A": "A", "/card/B": "B"}
+
+
+def test_delete_photos_moves_files_to_trash_and_removes_rows(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    real_file = tmp_path / "real.jpg"
+    real_file.write_bytes(b"content")
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path=str(real_file), folder=str(tmp_path), filename="real.jpg", thumbnail=b"t")
+    api = _make_api(conn)
+    photo_id = api.list_photos()[0]["id"]
+
+    trashed = []
+    monkeypatch.setattr("shiguang.api.send2trash", lambda p: trashed.append(p))
+
+    result = api.delete_photos([photo_id])
+
+    assert result["deleted"] == 1
+    assert result["error"] is None
+    assert trashed == [str(real_file)]
+    assert api.list_photos() == []
+
+
+def test_delete_photos_continues_when_a_file_is_already_gone(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path="/nonexistent/gone.jpg", folder="/nonexistent", filename="gone.jpg", thumbnail=b"t")
+    api = _make_api(conn)
+    photo_id = api.list_photos()[0]["id"]
+
+    def fake_trash(p):
+        raise OSError("file not found")
+
+    monkeypatch.setattr("shiguang.api.send2trash", fake_trash)
+
+    result = api.delete_photos([photo_id])
+
+    assert result["deleted"] == 1
+    assert api.list_photos() == []
