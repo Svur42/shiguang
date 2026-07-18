@@ -34,8 +34,11 @@ def insert_photo(conn, path, folder, filename, thumbnail):
 
 
 def list_photos(conn):
+    # 按 id 倒序 = 按导入顺序倒序，最近导入的排最前面。id 是自增主键，天然反映
+    # 每张照片被插入（导入）的先后。这样用户一导入完，新照片就出现在列表顶部，
+    # 不会像"按文件名排序"那样被打散、埋进已有的上千张照片中间找不到。
     cur = conn.execute(
-        "SELECT id, path, folder, filename, thumbnail, tier, auto_tier FROM photos ORDER BY filename"
+        "SELECT id, path, folder, filename, thumbnail, tier, auto_tier FROM photos ORDER BY id DESC"
     )
     return cur.fetchall()
 
