@@ -1,0 +1,1911 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>拾光 ShiGuang · RAW 照片质量筛选</title>
+<style>
+/* ─────────────────────────────────────────────────────────────────
+ * design-systems/apple/tokens.css — pasted verbatim
+ * ───────────────────────────────────────────────────────────────── */
+:root {
+  --bg: #ffffff;
+  --surface: #f5f5f7;
+  --surface-warm: #fbfbfd;
+  --fg: #1d1d1f;
+  --fg-2: #424245;
+  --muted: #6e6e73;
+  --meta: #86868b;
+  --border: #d2d2d7;
+  --border-soft: #e8e8ed;
+  --accent: #0071e3;
+  --accent-on: #ffffff;
+  --accent-hover: #0077ed;
+  --accent-active: #0066cc;
+  --success: #16a34a;
+  --warn:    #eab308;
+  --danger:  #dc2626;
+  --font-display: "SF Pro Display", "SF Pro Icons", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-body: "SF Pro Text", "SF Pro Icons", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
+  --text-xs: 12px; --text-sm: 14px; --text-base: 17px; --text-lg: 21px;
+  --text-xl: 28px; --text-2xl: 40px; --text-3xl: 56px; --text-4xl: 80px;
+  --leading-body: 1.47; --leading-tight: 1.05;
+  --tracking-display: -0.015em;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-12: 48px;
+  --section-y-desktop: 100px; --section-y-tablet: 64px; --section-y-phone: 40px;
+  --radius-sm: 8px; --radius-md: 12px; --radius-lg: 18px; --radius-pill: 980px;
+  --elev-flat: none;
+  --elev-ring: 0 0 0 1px var(--border);
+  --elev-raised: 0 12px 32px rgba(0, 0, 0, 0.08);
+  --focus-ring: 0 0 0 4px color-mix(in oklab, var(--accent), transparent 65%);
+  --motion-fast: 150ms; --motion-base: 220ms; --motion-emphasized: 260ms;
+  --ease-standard: cubic-bezier(0.28, 0, 0.22, 1);
+  /* smoother, longer deceleration for "physical" moments — card lift,
+   * modal/overlay entrances — vs. the snappier --ease-standard used for
+   * routine hover/toggle feedback. No overshoot; premium reads as
+   * controlled, not springy. */
+  --ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
+  --container-max: 1024px;
+  --container-gutter-desktop: 22px; --container-gutter-tablet: 18px; --container-gutter-phone: 16px;
+
+  /* ─── app-specific extension ───────────────────────────────────
+   * RGB channel colors for the histogram module. These are not brand
+   * tokens — they are literal sRGB channel identities (red/green/blue
+   * mean red/green/blue in a histogram, not a design choice), kept as
+   * root variables so no raw hex appears outside :root. */
+  --chan-r: #ff453a;
+  --chan-g: #34c759;
+  --chan-b: #0a84ff;
+  --backdrop: #111113;
+
+  /* Fixed "text-on-color-chip" token — the warn chip (yellow) always
+   * needs a dark label regardless of light/dark theme, so this does
+   * NOT flip in the dark override below (unlike --fg, which does). */
+  --warn-on: #1d1d1f;
+}
+
+/* ─── dark theme override ───────────────────────────────────────
+ * Same token names, dark-mode values. Apple's own dark surfaces are
+ * near-black steps (not a literal invert of the light ramp), and the
+ * accent swaps to the brighter "High-Luminance Link Blue" the source
+ * DESIGN.md documents for darker scenes — #0071e3 loses contrast on
+ * near-black. Semantic tier colors (success/warn/danger) also lift a
+ * notch, matching Apple's documented dark-mode semantic palette. */
+:root[data-theme="dark"] {
+  --bg: #000000;
+  --surface: #1c1c1e;
+  --surface-warm: #232325;
+  --fg: #f5f5f7;
+  --fg-2: #d1d1d6;
+  --muted: #98989d;
+  --meta: #6e6e73;
+  --border: #38383a;
+  --border-soft: #2c2c2e;
+  --accent: #2997ff;
+  --accent-hover: #4dabff;
+  --accent-active: #0077ed;
+  --success: #30d158;
+  --warn: #ffd60a;
+  --danger: #ff453a;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--backdrop);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  line-height: var(--leading-body);
+  -webkit-font-smoothing: antialiased;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+button { font: inherit; cursor: pointer; }
+input, select { font: inherit; }
+svg { display: block; }
+
+/* ─── app window shell ────────────────────────────────────────── */
+.app-window {
+  width: 100vw;
+  height: 100vh;
+  max-width: 1600px;
+  max-height: 1000px;
+  background: var(--bg);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 40px 90px rgba(0,0,0,0.45);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+.titlebar {
+  height: 32px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding-left: var(--space-3);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.tl-appicon {
+  width: 16px; height: 16px; color: var(--accent); flex: 0 0 auto;
+}
+.tl-title {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  font-weight: 500;
+  margin-left: var(--space-2);
+}
+.tl-spacer { flex: 1 1 auto; }
+/* Windows 11 Fluent-style window controls — this app runs on Windows,
+ * so the chrome follows Windows conventions (min / max / close, right
+ * -aligned, hover fills) even though the content area's palette and
+ * type follow the Apple-inspired visual language. */
+.win-controls { display: flex; align-items: center; height: 100%; }
+.win-btn {
+  width: 44px; height: 100%;
+  display: grid; place-items: center;
+  background: transparent; border: none;
+  color: var(--fg-2);
+}
+.win-btn svg { width: 10px; height: 10px; }
+.win-btn:hover { background: color-mix(in oklab, var(--fg), transparent 92%); }
+.win-btn.win-close:hover { background: var(--danger); color: var(--accent-on); }
+
+.app-body { flex: 1 1 auto; display: flex; min-height: 0; }
+
+/* ─── sidebar ──────────────────────────────────────────────────── */
+.sidebar {
+  width: 220px;
+  flex: 0 0 220px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: var(--space-4) var(--space-3);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.sidebar-section { display: flex; flex-direction: column; gap: 2px; }
+.side-label {
+  font-size: 11px;
+  color: var(--meta);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: var(--space-2) var(--space-2) 4px;
+}
+.side-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 7px var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--fg-2);
+  transition: background var(--motion-fast) var(--ease-standard);
+}
+.side-item:hover { background: color-mix(in oklab, var(--fg), transparent 94%); }
+.side-item:disabled { opacity: 0.45; cursor: default; pointer-events: none; }
+.side-item.active {
+  background: color-mix(in oklab, var(--accent), transparent 88%);
+  color: var(--accent-active);
+  font-weight: 600;
+}
+.folder-icon { width: 14px; height: 14px; color: var(--meta); flex: 0 0 auto; }
+.side-item.active .folder-icon { color: var(--accent-active); }
+.folder-nav-empty { font-size: 12px; color: var(--meta); padding: 4px var(--space-2) 2px; line-height: 1.5; }
+
+/* a folder row does double duty: clicking the row switches to viewing
+ * just that folder; the checkbox stages it for the separate "combine"
+ * action below without changing what's currently shown. Two distinct
+ * interactive targets in one row, same pattern as the photo grid's
+ * checkbox-vs-card split. */
+.side-label-row { display: flex; align-items: center; justify-content: space-between; margin: var(--space-2) var(--space-2) 4px; }
+.side-label-row .side-label { margin: 0; }
+.folder-combine-btn {
+  border: none; background: transparent; color: var(--accent);
+  font-size: 11px; font-weight: 600; padding: 2px 4px; border-radius: 4px;
+}
+.folder-combine-btn:hover { background: color-mix(in oklab, var(--accent), transparent 90%); }
+.folder-combine-btn:disabled { color: var(--meta); cursor: default; pointer-events: none; }
+.folder-combine-btn.active { color: var(--accent-active); }
+.folder-row { cursor: pointer; }
+.folder-check { width: 14px; height: 14px; accent-color: var(--accent); flex: 0 0 auto; margin: 0; }
+.folder-row-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the "start analysis" action is the one lifecycle step users must take
+ * by hand — it gets accent styling like a primary button while pending
+ * photos exist, and goes quiet once there's nothing left to analyze. */
+.side-item-primary {
+  background: color-mix(in oklab, var(--accent), transparent 88%);
+  color: var(--accent-active);
+  font-weight: 600;
+}
+.side-item-primary:hover { background: color-mix(in oklab, var(--accent), transparent 80%); }
+.side-item-primary:disabled { background: transparent; color: var(--fg-2); font-weight: 500; }
+.side-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.side-dot.tier-bad { background: var(--danger); }
+.side-dot.tier-fix { background: var(--warn); }
+.side-dot.tier-good { background: var(--success); }
+.side-dot.tier-all,
+.side-dot.tier-pending { background: var(--meta); }
+.side-item .count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--meta);
+}
+.side-item.active .count { color: var(--accent-active); }
+.sidebar-footer { margin-top: auto; border-top: 1px solid var(--border-soft); padding-top: var(--space-3); display: flex; flex-direction: column; gap: 2px; }
+
+/* ─── main column ──────────────────────────────────────────────── */
+.main { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+
+.toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in oklab, var(--bg) 92%, transparent);
+  backdrop-filter: blur(12px);
+}
+.search-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 260px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--meta);
+}
+.search-field input {
+  border: none; outline: none; background: transparent; color: var(--fg);
+  font-size: var(--text-sm); width: 100%;
+}
+.search-field svg { width: 14px; height: 14px; color: var(--meta); flex: 0 0 auto; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard), opacity var(--motion-fast);
+}
+.btn:hover { border-color: var(--meta); }
+.btn:active { transform: translateY(1px); }
+.btn:focus-visible { box-shadow: var(--focus-ring); outline: none; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-on); }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary:active { background: var(--accent-active); }
+.btn-danger { background: transparent; border-color: var(--border); color: var(--danger); }
+.btn-danger:hover { background: color-mix(in oklab, var(--danger), transparent 92%); border-color: var(--danger); }
+.btn-danger:disabled, .btn:disabled { opacity: 0.4; cursor: default; pointer-events: none; }
+.btn-sm { padding: 6px 12px; font-size: var(--text-xs); }
+.btn svg { width: 14px; height: 14px; }
+.btn.icon-only { padding: 7px; }
+
+.segmented {
+  display: flex;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+}
+.seg-item {
+  border: none; background: transparent; color: var(--muted);
+  font-size: var(--text-xs); font-weight: 500;
+  padding: 5px 12px; border-radius: 6px;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.seg-item.active { background: var(--bg); color: var(--fg); box-shadow: var(--elev-ring); }
+
+.toolbar-spacer { flex: 1 1 auto; }
+
+/* ─── gallery content ──────────────────────────────────────────── */
+.content { flex: 1 1 auto; overflow-y: auto; padding: var(--space-5) var(--space-6) var(--space-8); }
+.group-header {
+  display: flex; align-items: baseline; gap: var(--space-3);
+  margin: var(--space-6) 0 var(--space-3);
+}
+.group-header:first-child { margin-top: 0; }
+.group-header h3 { margin: 0; font-size: var(--text-base); font-weight: 600; }
+.group-header .group-count { font-family: var(--font-mono); font-size: 11px; color: var(--meta); }
+.group-header .group-dot { width: 9px; height: 9px; border-radius: 50%; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: var(--space-4);
+}
+/* density is one dial, not two — column width is the only thing that
+ * changes; row count is just whatever fits given the aspect-ratio'd
+ * thumbnails, same as Lightroom/Bridge/Capture One grid zoom. */
+[data-density="compact"] .grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--space-3); }
+[data-density="large"] .grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+
+.photo-card {
+  position: relative;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface);
+  cursor: pointer;
+  border: 2px solid var(--border);
+  transition: transform var(--motion-emphasized) var(--ease-emphasized), box-shadow var(--motion-emphasized) var(--ease-emphasized);
+}
+.photo-card:hover { box-shadow: var(--elev-raised); transform: translateY(-1px); }
+.photo-card.tier-bad  { border-color: var(--danger); }
+.photo-card.tier-fix  { border-color: var(--warn); }
+.photo-card.tier-good { border-color: var(--success); }
+.photo-card.tier-pending { border-color: var(--border); }
+/* Selection reads as a physical "lift" (deeper shadow, same upward
+ * nudge as hover but stronger) rather than a second colored ring —
+ * the tier border already owns the border-color channel, so stacking
+ * an accent outline on top of it fought for the same visual slot. */
+.photo-card.selected { transform: translateY(-4px); box-shadow: 0 18px 38px rgba(0,0,0,0.24); }
+/* immediate press feedback on mousedown — this is what makes the click
+ * feel instantaneous; the selection state itself now commits on click
+ * with no artificial delay (see the click handler's use of e.detail). */
+.photo-card:active { transform: scale(0.97); transition-duration: 90ms; }
+.photo-card.selected:active { transform: translateY(-4px) scale(0.97); }
+
+.photo-thumb {
+  width: 100%; aspect-ratio: 3/2;
+  background-size: cover; background-position: center;
+  display: block;
+  position: relative;
+}
+.photo-check {
+  position: absolute; top: 8px; left: 8px;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: rgba(0,0,0,0.35);
+  border: 1.5px solid rgba(255,255,255,0.85);
+  display: grid; place-items: center;
+  backdrop-filter: blur(4px);
+}
+.photo-check svg { width: 12px; height: 12px; color: var(--accent-on); opacity: 0; }
+.photo-card.selected .photo-check { background: var(--accent); border-color: var(--accent); }
+.photo-card.selected .photo-check svg { opacity: 1; }
+
+.burst-badge {
+  position: absolute; top: 8px; right: 8px;
+  background: rgba(0,0,0,0.55);
+  color: var(--accent-on);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: var(--radius-pill);
+  backdrop-filter: blur(4px);
+}
+.tier-tag {
+  position: absolute; bottom: 8px; left: 8px;
+  font-size: 10px; font-weight: 600;
+  padding: 2px 8px; border-radius: var(--radius-pill);
+  color: var(--accent-on); letter-spacing: 0.02em;
+}
+.tier-tag.tier-bad  { background: color-mix(in oklab, var(--danger), transparent 8%); }
+.tier-tag.tier-fix  { background: color-mix(in oklab, var(--warn), transparent 8%); color: var(--warn-on); }
+.tier-tag.tier-good { background: color-mix(in oklab, var(--success), transparent 8%); }
+.tier-tag.tier-pending { background: color-mix(in oklab, var(--meta), transparent 8%); }
+
+.photo-meta { padding: 6px 8px 8px; }
+.photo-meta .fname { font-size: 11px; color: var(--fg-2); font-family: var(--font-mono); }
+.photo-meta .ftime { font-size: 10px; color: var(--meta); margin-top: 1px; }
+
+/* ─── import modal ─────────────────────────────────────────────── */
+.modal-backdrop {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.4);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 50;
+  opacity: 1; transition: opacity var(--motion-base) var(--ease-standard);
+}
+.modal-backdrop.hidden { opacity: 0; pointer-events: none; }
+.modal-card {
+  width: 460px;
+  background: var(--bg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-raised);
+  padding: var(--space-6);
+  transform: scale(1);
+  transition: transform var(--motion-emphasized) var(--ease-emphasized);
+}
+/* card scales in from a hair under full size rather than just fading —
+ * the same "materializing" entrance macOS sheets use. */
+.modal-backdrop.hidden .modal-card { transform: scale(0.94); }
+.modal-icon {
+  width: 44px; height: 44px; border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--accent), transparent 88%);
+  color: var(--accent);
+  display: grid; place-items: center;
+  margin-bottom: var(--space-4);
+}
+.modal-icon svg { width: 22px; height: 22px; }
+.modal-card h2 { margin: 0 0 4px; font-family: var(--font-display); font-size: var(--text-xl); letter-spacing: var(--tracking-display); }
+.modal-card .modal-sub { margin: 0 0 var(--space-5); color: var(--muted); font-size: var(--text-sm); }
+
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: var(--space-4); }
+.field label { font-size: 12px; color: var(--muted); }
+.input, .select {
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+}
+.input:focus, .select:focus { outline: none; border-color: var(--accent); box-shadow: var(--focus-ring); }
+.path-row { display: flex; gap: 8px; }
+.path-row .input { flex: 1 1 auto; }
+
+/* multi-folder pick list in the import modal — checking two folders
+ * here is what seeds the sidebar's folder shortcuts, so the user never
+ * has to re-browse to switch between them later. */
+.folder-check-list {
+  display: flex; flex-direction: column; gap: 4px;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 6px; background: var(--surface);
+}
+.folder-check-item {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: 8px; border-radius: var(--radius-sm); cursor: pointer;
+}
+.folder-check-item:hover { background: var(--border-soft); }
+.folder-check-item input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); flex: 0 0 auto; }
+.folder-check-item .folder-icon { width: 18px; height: 18px; }
+.folder-check-name { flex: 1 1 auto; font-family: var(--font-mono); font-size: 13px; color: var(--fg); line-height: 1.35; }
+.folder-check-path { display: block; font-size: 11px; color: var(--meta); font-weight: 400; }
+.folder-check-meta { font-family: var(--font-mono); font-size: 11px; color: var(--meta); flex: 0 0 auto; }
+
+.stat-row { display: flex; gap: var(--space-6); padding: var(--space-4) 0; border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft); margin-bottom: var(--space-5); }
+.stat-block .stat-num { font-family: var(--font-mono); font-size: var(--text-2xl); font-weight: 600; letter-spacing: -0.01em; color: var(--fg); }
+.stat-block .stat-label { font-size: 11px; color: var(--meta); margin-top: 2px; }
+
+.modal-actions { display: flex; justify-content: flex-end; gap: var(--space-3); }
+
+/* ─── fullscreen photo preview (double-click a thumbnail) ────────
+ * Replaces the old fixed-width slide-out: the photo itself now fills
+ * the whole window and the info panel is a secondary, toggleable
+ * layer on top of it, not the other way around. */
+.fp-overlay {
+  position: absolute; inset: 32px 0 0 0;
+  background: var(--backdrop);
+  z-index: 48;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-base) var(--ease-standard);
+}
+.fp-overlay.open { opacity: 1; pointer-events: auto; }
+
+/* the stage is the photo's real estate — it shrinks to make room for
+ * the sidebar instead of letting the sidebar sit on top of the image,
+ * so the whole photo (equal-scale, via contain) stays visible either
+ * way rather than getting covered on the right edge. It also carries
+ * the fullscreen preview's entrance: a soft scale-up rather than a
+ * hard cut, so opening a photo feels like the same "materialize"
+ * language as the import modal. */
+.fp-stage {
+  position: absolute; top: 0; left: 0; bottom: 0; right: 0;
+  transform: scale(0.97);
+  transition: right var(--motion-base) var(--ease-standard), transform var(--motion-emphasized) var(--ease-emphasized);
+}
+.fp-overlay.open .fp-stage { transform: scale(1); }
+.fp-stage.info-open { right: 380px; }
+
+.fp-image {
+  position: absolute; inset: 0;
+  background-size: contain; /* whole photo stays visible, never cropped */
+  background-position: center;
+  background-repeat: no-repeat;
+  transform-origin: center;
+  cursor: default;
+  transition: transform 80ms linear;
+}
+.fp-image.zoomed { cursor: grab; }
+.fp-image.zoomed.dragging { cursor: grabbing; transition: none; }
+
+.fp-hint {
+  position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+  font-size: 12px; color: rgba(255,255,255,0.65);
+  background: rgba(0,0,0,0.4); padding: 5px 14px; border-radius: var(--radius-pill);
+  pointer-events: none;
+}
+
+.fp-icon-btn {
+  position: absolute; top: 16px;
+  width: 36px; height: 36px; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.35);
+  background: rgba(0,0,0,0.4);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: var(--accent-on);
+  display: grid; place-items: center;
+  z-index: 5;
+  transition: background var(--motion-fast) var(--ease-standard), opacity var(--motion-fast);
+}
+.fp-icon-btn svg { width: 15px; height: 15px; }
+.fp-icon-btn:hover { background: rgba(0,0,0,0.6); }
+.fp-icon-btn:disabled { opacity: 0.25; pointer-events: none; }
+.fp-close { right: 16px; }
+.fp-toggle-info { right: 64px; }
+.fp-toggle-info.active { background: var(--accent); border-color: var(--accent); }
+
+/* prev/next live on the stage (not the overlay) so they hug the photo's
+ * own left/right edge and never end up hidden behind the info sidebar
+ * when it's pulled out over the right side. */
+.fp-nav-btn {
+  top: 50%; transform: translateY(-50%);
+  width: 44px; height: 44px;
+}
+.fp-nav-btn:hover { transform: translateY(-50%) scale(1.06); }
+.fp-nav-prev { left: 20px; }
+.fp-nav-next { right: 20px; }
+
+/* the info sidebar slides out over the image (doesn't resize the
+ * stage) — same "pull out" feel as the pre-existing detail panel. */
+.fp-sidebar {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  width: 380px;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  box-shadow: -16px 0 40px rgba(0,0,0,0.25);
+  z-index: 4;
+  display: flex; flex-direction: column;
+  transform: translateX(100%);
+  transition: transform var(--motion-base) var(--ease-standard);
+  overflow-y: auto;
+}
+.fp-sidebar.open { transform: translateX(0); }
+
+.panel-head {
+  padding: var(--space-4); border-bottom: 1px solid var(--border-soft);
+  position: sticky; top: 0; background: var(--bg); z-index: 2;
+}
+.panel-head .fname { font-family: var(--font-mono); font-size: var(--text-sm); font-weight: 600; }
+
+.panel-body { padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-5); }
+.expo-spot { position: absolute; border-radius: 4px; display: none; }
+.expo-spot.show { display: block; }
+.expo-spot.over  { background: repeating-linear-gradient(45deg, color-mix(in oklab, var(--danger), transparent 20%) 0 4px, transparent 4px 8px); border: 1px solid var(--danger); }
+.expo-spot.under { background: repeating-linear-gradient(45deg, color-mix(in oklab, var(--chan-b), transparent 20%) 0 4px, transparent 4px 8px); border: 1px solid var(--chan-b); }
+.expo-toggle-row { display: flex; align-items: center; justify-content: space-between; margin-top: var(--space-2); }
+.expo-toggle-row .legend { display: flex; gap: var(--space-3); font-size: 11px; color: var(--muted); }
+.legend-chip { display: inline-flex; align-items: center; gap: 4px; }
+.legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+.switch { position: relative; width: 34px; height: 20px; border-radius: 999px; background: var(--border); border: none; flex: 0 0 auto; }
+.switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--accent-on); transition: transform var(--motion-fast) var(--ease-standard); box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+.switch.on { background: var(--accent); }
+.switch.on::after { transform: translateX(14px); }
+
+.panel-section h4 { margin: 0 0 var(--space-3); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.04em; color: var(--meta); font-weight: 600; }
+
+.hist-card { border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3); background: var(--surface); }
+.hist-card svg { width: 100%; height: 64px; display: block; }
+.chan-row { display: flex; gap: var(--space-2); margin-top: var(--space-3); }
+.chan-block { flex: 1 1 0; border: 1px solid var(--border); border-radius: 8px; padding: 6px; background: var(--surface); }
+.chan-block svg { width: 100%; height: 30px; }
+.chan-label { font-size: 10px; font-family: var(--font-mono); text-align: center; margin-top: 3px; }
+.chan-label.r { color: var(--chan-r); }
+.chan-label.g { color: var(--chan-g); }
+.chan-label.b { color: var(--chan-b); }
+
+.exif-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3) var(--space-4); }
+.exif-item .k { font-size: 11px; color: var(--meta); }
+.exif-item .v { font-family: var(--font-mono); font-size: var(--text-sm); margin-top: 2px; }
+.raw-pill { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-pill); background: color-mix(in oklab, var(--accent), transparent 88%); color: var(--accent-active); font-family: var(--font-mono); font-size: 11px; font-weight: 600; }
+
+.tier-picker { display: flex; gap: 8px; }
+.tier-btn {
+  flex: 1 1 0; padding: 10px 8px; border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border); background: var(--surface);
+  color: var(--muted); font-size: 12px; font-weight: 600; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+}
+.tier-btn .dot { width: 9px; height: 9px; border-radius: 50%; }
+.tier-btn[data-tier="bad"] .dot { background: var(--danger); }
+.tier-btn[data-tier="fix"] .dot { background: var(--warn); }
+.tier-btn[data-tier="good"] .dot { background: var(--success); }
+.tier-btn.active[data-tier="bad"]  { border-color: var(--danger); color: var(--danger); background: color-mix(in oklab, var(--danger), transparent 92%); }
+.tier-btn.active[data-tier="fix"]  { border-color: var(--warn); color: color-mix(in oklab, var(--warn), black 35%); background: color-mix(in oklab, var(--warn), transparent 88%); }
+.tier-btn.active[data-tier="good"] { border-color: var(--success); color: var(--success); background: color-mix(in oklab, var(--success), transparent 92%); }
+.tier-auto-note { font-size: 11px; color: var(--meta); margin-top: var(--space-2); }
+
+/* ─── compare overlay — fullscreen adaptive grid ────────────────── */
+.compare-overlay {
+  position: absolute; inset: 32px 0 0 0;
+  background: var(--backdrop);
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-base) var(--ease-standard);
+}
+.compare-overlay.open { opacity: 1; pointer-events: auto; }
+.compare-head {
+  display: flex; align-items: center; gap: var(--space-4);
+  padding: var(--space-3) var(--space-5);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.compare-head h2 { margin: 0; font-family: var(--font-display); font-size: var(--text-lg); letter-spacing: var(--tracking-display); color: var(--fg); }
+.compare-head-spacer { flex: 1 1 auto; }
+.compare-limit-note { font-size: 11px; color: var(--meta); }
+
+.compare-body {
+  flex: 1 1 auto;
+  display: grid;
+  gap: 4px;
+  padding: 4px;
+  background: var(--backdrop);
+  min-height: 0;
+}
+
+.compare-cell {
+  position: relative;
+  overflow: hidden;
+  background: var(--backdrop);
+  border: 2px solid transparent;
+}
+.compare-cell.tier-bad  { border-color: var(--danger); }
+.compare-cell.tier-fix  { border-color: var(--warn); }
+.compare-cell.tier-good { border-color: var(--success); }
+.compare-cell.tier-pending { border-color: var(--border); }
+
+.compare-cell-img {
+  position: absolute; inset: 0;
+  /* equal-scale, never cropped — the cell and the app share the same
+   * near-black backdrop so any letterboxing reads as a deliberate
+   * mat around the photo instead of a layout gap. */
+  background-size: contain;
+  background-position: center;
+  background-repeat: no-repeat;
+  transform: scale(1);
+  transform-origin: center;
+  transition: transform 80ms linear;
+  cursor: default;
+}
+.compare-cell-img.zoomed { cursor: grab; }
+.compare-cell-img.zoomed.dragging { cursor: grabbing; transition: none; }
+
+/* one hoverable bar spanning the cell top — a single translucent
+ * surface (per the brief: "整栏都是半透明的"), not per-element chips.
+ * Filename, tier switch and both delete actions sit on the SAME row —
+ * narrower, equal-length tier labels are what make that fit. */
+.compare-cell-bar {
+  position: absolute; top: 0; left: 0; right: 0;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(10px);
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-standard);
+  padding: 8px var(--space-3);
+  display: flex; align-items: center; gap: var(--space-3);
+}
+.compare-cell:hover .compare-cell-bar,
+.compare-cell:focus-within .compare-cell-bar { opacity: 1; transform: translateY(0); }
+
+.cc-fname {
+  font-family: var(--font-mono); font-size: 12px; color: var(--accent-on); font-weight: 600;
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.cc-tier-row { display: flex; gap: 4px; flex: 0 0 auto; }
+.cc-tier-btn {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  backdrop-filter: blur(6px);
+  color: rgba(255,255,255,0.8);
+  font-size: 10.5px; font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.cc-tier-btn[data-tier="bad"]  { background: color-mix(in oklab, var(--danger), transparent 72%); border-color: color-mix(in oklab, var(--danger), transparent 35%); }
+.cc-tier-btn[data-tier="fix"]  { background: color-mix(in oklab, var(--warn), transparent 72%); border-color: color-mix(in oklab, var(--warn), transparent 35%); }
+.cc-tier-btn[data-tier="good"] { background: color-mix(in oklab, var(--success), transparent 72%); border-color: color-mix(in oklab, var(--success), transparent 35%); }
+.cc-tier-btn.active[data-tier="bad"]  { background: color-mix(in oklab, var(--danger), transparent 15%); color: var(--accent-on); border-color: var(--danger); }
+.cc-tier-btn.active[data-tier="fix"]  { background: color-mix(in oklab, var(--warn), transparent 10%); color: var(--warn-on); border-color: var(--warn); }
+.cc-tier-btn.active[data-tier="good"] { background: color-mix(in oklab, var(--success), transparent 15%); color: var(--accent-on); border-color: var(--success); }
+
+/* two distinct actions, two distinct risk levels — X removes from this
+ * comparison only (reversible, neutral tone); the trash can permanently
+ * deletes the source photo (destructive, so it carries a warning tone
+ * even at rest, sits furthest from the pointer's natural approach, and
+ * is followed by an undoable toast rather than a silent removal). */
+.cc-icons { display: flex; gap: 6px; flex: 0 0 auto; }
+.cc-icon-btn {
+  width: 24px; height: 24px; border-radius: 50%;
+  display: grid; place-items: center; flex: 0 0 auto;
+  border: 1px solid rgba(255,255,255,0.45);
+  background: rgba(0,0,0,0.3);
+  color: var(--accent-on);
+}
+.cc-icon-btn svg { width: 11px; height: 11px; }
+.cc-del:hover { background: rgba(255,255,255,0.28); }
+.cc-trash {
+  border-color: color-mix(in oklab, var(--danger), transparent 25%);
+  color: color-mix(in oklab, var(--danger), white 20%);
+}
+.cc-trash:hover { background: var(--danger); border-color: var(--danger); color: var(--accent-on); }
+
+.cc-zoom-hint {
+  position: absolute; bottom: 8px; right: 8px;
+  font-family: var(--font-mono); font-size: 10px;
+  color: rgba(255,255,255,0.65);
+  background: rgba(0,0,0,0.4);
+  padding: 2px 7px; border-radius: var(--radius-pill);
+  pointer-events: none;
+  opacity: 0; transition: opacity var(--motion-fast);
+}
+.compare-cell:hover .cc-zoom-hint { opacity: 1; }
+
+.add-popover {
+  position: absolute; z-index: 10;
+  width: 260px; max-height: 320px; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-md); box-shadow: var(--elev-raised);
+  padding: var(--space-2);
+  display: none;
+}
+.add-popover.open { display: block; }
+.add-popover-item {
+  display: flex; align-items: center; gap: var(--space-3);
+  width: 100%; text-align: left; background: transparent; border: none;
+  padding: 6px; border-radius: var(--radius-sm);
+}
+.add-popover-item:hover { background: var(--border-soft); }
+.add-popover-thumb { width: 40px; height: 28px; border-radius: 4px; background-size: cover; background-position: center; flex: 0 0 auto; }
+.add-popover-item .fname { font-family: var(--font-mono); font-size: 11px; color: var(--fg-2); }
+.add-popover-empty { padding: var(--space-4); text-align: center; color: var(--meta); font-size: 12px; }
+
+.toast {
+  position: absolute; bottom: 24px; left: 50%; transform: translate(-50%, 12px);
+  background: var(--backdrop); color: var(--accent-on); padding: 10px 12px 10px 18px; border-radius: var(--radius-pill);
+  font-size: var(--text-sm); box-shadow: var(--elev-raised);
+  opacity: 0; transition: opacity var(--motion-base), transform var(--motion-base);
+  z-index: 60; pointer-events: none;
+  display: flex; align-items: center; gap: 10px;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+.toast-undo {
+  background: transparent; border: 1px solid rgba(255,255,255,0.4);
+  color: var(--accent-on); padding: 3px 11px; border-radius: var(--radius-pill);
+  font-size: 12px; font-weight: 600; flex: 0 0 auto;
+}
+.toast-undo:hover { background: rgba(255,255,255,0.15); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: color-mix(in oklab, var(--fg), transparent 85%); border-radius: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+<div class="app-window" data-od-id="app-window">
+
+  <div class="titlebar" data-od-id="titlebar">
+    <svg class="tl-appicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="6" width="18" height="14" rx="2"/><circle cx="12" cy="13" r="4"/><path d="M8 6l1.5-2h5L16 6"/></svg>
+    <span class="tl-title">拾光 ShiGuang — D:\DCIM\100CANON</span>
+    <div class="tl-spacer"></div>
+    <div class="win-controls" data-od-id="window-controls">
+      <button class="win-btn" aria-label="最小化"><svg viewBox="0 0 10 10"><rect x="0" y="4.5" width="10" height="1" fill="currentColor"/></svg></button>
+      <button class="win-btn" aria-label="最大化"><svg viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor"/></svg></button>
+      <button class="win-btn win-close" aria-label="关闭"><svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10" stroke="currentColor" stroke-width="1"/></svg></button>
+    </div>
+  </div>
+
+  <div class="app-body">
+    <aside class="sidebar" data-od-id="sidebar">
+      <div class="sidebar-section" id="tier-nav">
+        <button class="side-item active" data-filter="all"><span class="side-dot tier-all"></span>全部照片<span class="count" id="cnt-all">0</span></button>
+        <button class="side-item" data-filter="pending"><span class="side-dot tier-pending"></span>待分析<span class="count" id="cnt-pending">0</span></button>
+        <button class="side-item" data-filter="bad"><span class="side-dot tier-bad"></span>废片<span class="count" id="cnt-bad">0</span></button>
+        <button class="side-item" data-filter="fix"><span class="side-dot tier-fix"></span>可修<span class="count" id="cnt-fix">0</span></button>
+        <button class="side-item" data-filter="good"><span class="side-dot tier-good"></span>精选<span class="count" id="cnt-good">0</span></button>
+      </div>
+      <div class="sidebar-section" id="folder-nav" data-od-id="folder-nav"></div>
+      <div class="sidebar-section sidebar-footer">
+        <button class="side-item side-item-primary" id="btn-analyze" data-od-id="btn-analyze" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:14px;height:14px;"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M17.5 17.5L15 15M6 18l2.5-2.5M17.5 6.5L15 9"/></svg>
+          开始分析<span class="count" id="analyze-count">0</span>
+        </button>
+        <button class="side-item" id="btn-reimport" data-od-id="btn-reimport">＋ 导入新存储卡…</button>
+      </div>
+    </aside>
+
+    <section class="main">
+      <div class="toolbar" data-od-id="toolbar">
+        <div class="search-field">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.3-4.3"/></svg>
+          <input type="text" placeholder="搜索文件名、标签…" />
+        </div>
+        <button class="btn btn-sm" id="btn-filter">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+          筛选 · 全部机型
+        </button>
+        <div class="segmented" id="view-toggle" data-od-id="view-toggle">
+          <button class="seg-item active" data-view="time">时间视图</button>
+          <button class="seg-item" data-view="category">分类视图</button>
+        </div>
+        <div class="segmented" id="density-toggle" data-od-id="density-toggle">
+          <button class="seg-item" data-density="compact">紧凑</button>
+          <button class="seg-item active" data-density="comfortable">标准</button>
+          <button class="seg-item" data-density="large">大图</button>
+        </div>
+        <div class="toolbar-spacer"></div>
+        <button class="btn btn-sm" id="btn-select-bad">一键全选废片</button>
+        <button class="btn btn-sm" id="btn-compare">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="7" height="14" rx="1"/><rect x="14" y="5" width="7" height="14" rx="1"/></svg>
+          对比模式
+        </button>
+        <button class="btn btn-danger btn-sm" id="btn-delete" disabled>删除所选（<span id="sel-count">0</span>）</button>
+        <button class="btn btn-sm icon-only" id="btn-theme" aria-label="切换深色/浅色">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" id="theme-icon"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
+        </button>
+      </div>
+
+      <div class="content" id="content" data-od-id="gallery-grid"></div>
+    </section>
+  </div>
+
+  <!-- import confirmation modal -->
+  <div class="modal-backdrop hidden" id="import-modal" data-od-id="import-modal">
+    <div class="modal-card">
+      <div class="modal-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="7" width="20" height="12" rx="2"/><path d="M2 11h20"/><path d="M6 15h4"/></svg>
+      </div>
+      <h2>检测到存储卡</h2>
+      <p class="modal-sub">检测到以下目录，勾选要导入的文件夹——确认后会记忆在侧边栏，之后可以直接切换查看，不用再重新选择。导入后不会自动分析，需要手动点击「开始分析」。</p>
+
+      <div class="field">
+        <label>检测到的文件夹</label>
+        <div class="folder-check-list" id="folder-check-list">
+          <label class="folder-check-item">
+            <input type="checkbox" checked value="100CANON" data-count="8" data-size="2.1" />
+            <svg class="folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
+            <span class="folder-check-name">100CANON<span class="folder-check-path">D:\DCIM\100CANON</span></span>
+            <span class="folder-check-meta">8 张</span>
+          </label>
+          <label class="folder-check-item">
+            <input type="checkbox" checked value="101CANON" data-count="4" data-size="1.0" />
+            <svg class="folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
+            <span class="folder-check-name">101CANON<span class="folder-check-path">D:\DCIM\101CANON</span></span>
+            <span class="folder-check-meta">4 张</span>
+          </label>
+          <label class="folder-check-item">
+            <input type="checkbox" value="102CANON" data-count="8" data-size="2.1" />
+            <svg class="folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
+            <span class="folder-check-name">102CANON<span class="folder-check-path">D:\DCIM\102CANON</span></span>
+            <span class="folder-check-meta">8 张</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="stat-row">
+        <div class="stat-block">
+          <div class="stat-num" id="import-stat-count">12</div>
+          <div class="stat-label">张照片</div>
+        </div>
+        <div class="stat-block">
+          <div class="stat-num"><span id="import-stat-size">3.1</span><span style="font-size:14px;">GB</span></div>
+          <div class="stat-label">总大小 · 全部为 CR3 RAW</div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-sm" id="btn-cancel-import">取消</button>
+        <button class="btn btn-primary btn-sm" id="btn-confirm-import">确认导入</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- fullscreen photo preview (double-click a thumbnail to open) -->
+  <div class="fp-overlay" id="fp-overlay" data-od-id="fp-overlay">
+    <div class="fp-stage info-open" id="fp-stage">
+      <div class="fp-image" id="fp-image"></div>
+      <div class="expo-spot over"  id="es1" style="top:8%; left:6%; width:34%; height:22%;"></div>
+      <div class="expo-spot over"  id="es2" style="top:4%; right:8%; width:18%; height:14%;"></div>
+      <div class="expo-spot under" id="es3" style="bottom:6%; left:10%; width:40%; height:26%;"></div>
+      <div class="expo-spot under" id="es4" style="bottom:10%; right:6%; width:16%; height:16%;"></div>
+      <button class="fp-icon-btn fp-nav-btn fp-nav-prev" id="fp-prev" aria-label="上一张">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6"/></svg>
+      </button>
+      <button class="fp-icon-btn fp-nav-btn fp-nav-next" id="fp-next" aria-label="下一张">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+      <span class="fp-hint" id="fp-hint">滚轮缩放放大 · 可拖动查看</span>
+    </div>
+
+    <button class="fp-icon-btn fp-toggle-info active" id="fp-toggle-info" aria-label="详情">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8.3v.01M12 11v5.2" stroke-linecap="round"/></svg>
+    </button>
+    <button class="fp-icon-btn fp-close" id="fp-close" aria-label="关闭">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+
+    <aside class="fp-sidebar open" id="fp-sidebar" data-od-id="fp-sidebar">
+      <div class="panel-head">
+        <span class="fname" id="dp-fname">DSC_1042.CR3</span>
+      </div>
+      <div class="panel-body">
+        <div class="panel-section">
+          <h4>过曝 / 欠曝标注</h4>
+          <div class="expo-toggle-row" style="margin-top:0;">
+            <div class="legend">
+              <span class="legend-chip"><span class="legend-dot" style="background:var(--danger)"></span>过曝区域</span>
+              <span class="legend-chip"><span class="legend-dot" style="background:var(--chan-b)"></span>欠曝区域</span>
+            </div>
+            <button class="switch" id="expo-switch" aria-label="显示过曝/欠曝区域"></button>
+          </div>
+          <p class="tier-auto-note" id="expo-note">开启后在大图上高亮标注过曝 / 欠曝像素区域。</p>
+        </div>
+
+        <div class="panel-section">
+          <h4>整体直方图</h4>
+          <div class="hist-card">
+            <svg viewBox="0 0 200 64" preserveAspectRatio="none" id="hist-main"></svg>
+          </div>
+          <div class="chan-row">
+            <div class="chan-block"><svg viewBox="0 0 100 30" preserveAspectRatio="none" id="hist-r"></svg><div class="chan-label r">R 通道</div></div>
+            <div class="chan-block"><svg viewBox="0 0 100 30" preserveAspectRatio="none" id="hist-g"></svg><div class="chan-label g">G 通道</div></div>
+            <div class="chan-block"><svg viewBox="0 0 100 30" preserveAspectRatio="none" id="hist-b"></svg><div class="chan-label b">B 通道</div></div>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <h4>拍摄参数</h4>
+          <div class="exif-grid">
+            <div class="exif-item"><div class="k">相机</div><div class="v" id="dp-cam">Canon EOS R5</div></div>
+            <div class="exif-item"><div class="k">文件格式</div><div class="v"><span class="raw-pill" id="dp-raw">RAW</span></div></div>
+            <div class="exif-item"><div class="k">ISO</div><div class="v" id="dp-iso">100</div></div>
+            <div class="exif-item"><div class="k">快门</div><div class="v" id="dp-shutter">1/400s</div></div>
+            <div class="exif-item"><div class="k">光圈</div><div class="v" id="dp-aperture">f/2.8</div></div>
+            <div class="exif-item"><div class="k">焦距</div><div class="v" id="dp-focal">85mm</div></div>
+            <div class="exif-item"><div class="k">文件大小</div><div class="v" id="dp-size">45.2MB</div></div>
+            <div class="exif-item"><div class="k">拍摄时间</div><div class="v" id="dp-time">09:12:03</div></div>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <h4>质量档位 · 可手动修正</h4>
+          <div class="tier-picker" id="dp-tier-picker">
+            <button class="tier-btn" data-tier="bad"><span class="dot"></span>废片</button>
+            <button class="tier-btn" data-tier="fix"><span class="dot"></span>可修</button>
+            <button class="tier-btn" data-tier="good"><span class="dot"></span>精选</button>
+          </div>
+          <p class="tier-auto-note">系统基于清晰度与曝光分析自动判定，你可以在此覆盖。</p>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- compare overlay -->
+  <div class="compare-overlay" id="compare-overlay" data-od-id="compare-overlay">
+    <div class="compare-head">
+      <h2 id="compare-title">多图对比</h2>
+      <span class="compare-limit-note" id="compare-limit-note">最多支持 4 张同屏对比</span>
+      <div class="compare-head-spacer"></div>
+      <button class="btn btn-sm" id="btn-add-compare" data-od-id="btn-add-compare">＋ 添加照片</button>
+      <button class="btn btn-sm" id="btn-exit-compare">退出对比</button>
+    </div>
+    <div class="compare-body" id="compare-body" data-od-id="compare-body"></div>
+    <div class="add-popover" id="add-popover" data-od-id="add-popover"></div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+</div>
+
+<script>
+(function () {
+  let PHOTOS = [];   // 真实照片在初始化时从后端拉取；下面这份是原型演示数据，已停用
+  const PHOTOS_DEMO = [
+    {id:1,  file:'photo-11.jpg',  day:'6月14日', folder:'100CANON', time:'09:12:03', tier: null, autoTier: 'good', burst:null, iso:100,   shutter:'1/400s', aperture:'f/2.8', focal:'85mm',  cam:'Canon EOS R5', size:'45.2MB', name:'DSC_1042.CR3'},
+    {id:2,  file:'photo-22.jpg',  day:'6月14日', folder:'100CANON', time:'09:15:41', tier: null, autoTier: 'bad',  burst:null, iso:6400,  shutter:'1/60s',  aperture:'f/1.8', focal:'50mm',  cam:'Canon EOS R5', size:'44.8MB', name:'DSC_1043.CR3'},
+    {id:3,  file:'photo-33.jpg',  day:'6月14日', folder:'100CANON', time:'09:20:12', tier: null, autoTier: 'fix',  burst:6,    iso:400,   shutter:'1/250s', aperture:'f/4',   focal:'24mm',  cam:'Canon EOS R5', size:'43.1MB', name:'DSC_1044.CR3'},
+    {id:4,  file:'photo-44.jpg',  day:'6月14日', folder:'100CANON', time:'09:32:55', tier: null, autoTier: 'good', burst:null, iso:200,   shutter:'1/320s', aperture:'f/2.8', focal:'135mm', cam:'Canon EOS R5', size:'46.0MB', name:'DSC_1051.CR3'},
+    {id:5,  file:'photo-55.jpg',  day:'6月14日', folder:'100CANON', time:'09:40:08', tier: null, autoTier: 'bad',  burst:12,   iso:12800, shutter:'1/30s',  aperture:'f/1.4', focal:'35mm',  cam:'Canon EOS R5', size:'47.5MB', name:'DSC_1060.CR3'},
+    {id:6,  file:'photo-66.jpg',  day:'6月14日', folder:'100CANON', time:'09:55:33', tier: null, autoTier: 'good', burst:null, iso:100,   shutter:'1/500s', aperture:'f/2',   focal:'50mm',  cam:'Canon EOS R5', size:'44.4MB', name:'DSC_1075.CR3'},
+    {id:7,  file:'photo-77.jpg',  day:'6月14日', folder:'100CANON', time:'10:02:19', tier: null, autoTier: 'fix',  burst:null, iso:800,   shutter:'1/160s', aperture:'f/2.8', focal:'70mm',  cam:'Canon EOS R5', size:'45.9MB', name:'DSC_1080.CR3'},
+    {id:8,  file:'photo-88.jpg',  day:'6月14日', folder:'100CANON', time:'10:15:47', tier: null, autoTier: 'good', burst:null, iso:100,   shutter:'1/640s', aperture:'f/1.8', focal:'85mm',  cam:'Canon EOS R5', size:'46.7MB', name:'DSC_1090.CR3'},
+
+    {id:9,  file:'photo-99.jpg',  day:'6月13日', folder:'101CANON', time:'14:03:21', tier: null, autoTier: 'fix',  burst:4,    iso:640,   shutter:'1/125s', aperture:'f/2.2', focal:'50mm',  cam:'Canon EOS R5', size:'43.9MB', name:'DSC_0912.CR3'},
+    {id:10, file:'photo-111.jpg', day:'6月13日', folder:'101CANON', time:'14:10:04', tier: null, autoTier: 'good', burst:null, iso:200,   shutter:'1/250s', aperture:'f/2.8', focal:'85mm',  cam:'Canon EOS R5', size:'45.0MB', name:'DSC_0920.CR3'},
+    {id:11, file:'photo-122.jpg', day:'6月13日', folder:'101CANON', time:'14:20:58', tier: null, autoTier: 'bad',  burst:null, iso:6400,  shutter:'1/40s',  aperture:'f/1.4', focal:'35mm',  cam:'Canon EOS R5', size:'44.6MB', name:'DSC_0935.CR3'},
+    {id:12, file:'photo-133.jpg', day:'6月13日', folder:'101CANON', time:'14:30:15', tier: null, autoTier: 'good', burst:3,    iso:100,   shutter:'1/400s', aperture:'f/2',   focal:'50mm',  cam:'Canon EOS R5', size:'46.1MB', name:'DSC_0950.CR3'},
+
+    {id:13, file:'photo-11.jpg',  day:'6月10日', folder:'102CANON', time:'11:02:30', tier: null, autoTier: 'fix',  burst:null, iso:320,   shutter:'1/200s', aperture:'f/5.6', focal:'24mm',  cam:'Canon EOS R5', size:'42.9MB', name:'DSC_0512.CR3'},
+    {id:14, file:'photo-22.jpg',  day:'6月10日', folder:'102CANON', time:'11:10:44', tier: null, autoTier: 'good', burst:null, iso:100,   shutter:'1/500s', aperture:'f/4',   focal:'35mm',  cam:'Canon EOS R5', size:'43.5MB', name:'DSC_0520.CR3'},
+    {id:15, file:'photo-33.jpg',  day:'6月10日', folder:'102CANON', time:'11:20:09', tier: null, autoTier: 'bad',  burst:8,    iso:8000,  shutter:'1/50s',  aperture:'f/1.8', focal:'85mm',  cam:'Canon EOS R5', size:'44.0MB', name:'DSC_0533.CR3'},
+    {id:16, file:'photo-44.jpg',  day:'6月10日', folder:'102CANON', time:'11:35:52', tier: null, autoTier: 'fix',  burst:null, iso:500,   shutter:'1/160s', aperture:'f/2.8', focal:'50mm',  cam:'Canon EOS R5', size:'43.3MB', name:'DSC_0545.CR3'},
+    {id:17, file:'photo-55.jpg',  day:'6月10日', folder:'102CANON', time:'11:50:27', tier: null, autoTier: 'good', burst:null, iso:100,   shutter:'1/320s', aperture:'f/2.8', focal:'70mm',  cam:'Canon EOS R5', size:'45.5MB', name:'DSC_0560.CR3'},
+    {id:18, file:'photo-66.jpg',  day:'6月10日', folder:'102CANON', time:'12:02:13', tier: null, autoTier: 'fix',  burst:5,    iso:1000,  shutter:'1/100s', aperture:'f/3.5', focal:'24mm',  cam:'Canon EOS R5', size:'44.7MB', name:'DSC_0575.CR3'},
+    {id:19, file:'photo-77.jpg',  day:'6月10日', folder:'102CANON', time:'12:15:40', tier: null, autoTier: 'good', burst:null, iso:200,   shutter:'1/400s', aperture:'f/2',   focal:'85mm',  cam:'Canon EOS R5', size:'46.3MB', name:'DSC_0590.CR3'},
+    {id:20, file:'photo-88.jpg',  day:'6月10日', folder:'102CANON', time:'12:22:58', tier: null, autoTier: 'bad',  burst:null, iso:12800, shutter:'1/25s',  aperture:'f/1.4', focal:'50mm',  cam:'Canon EOS R5', size:'44.9MB', name:'DSC_0598.CR3'},
+  ];
+
+  const TIER_LABEL = { bad: '废片', fix: '可修', good: '精选' };
+  const PENDING_LABEL = '待分析';
+  const HIST_PRESETS = {
+    bad:  [2,4,8,14,22,30,40,55,70,86,96,88,60,34,16,8,4,3,2,1,1,1,2,4,8,14,26,44,62,78,88,90],
+    fix:  [3,6,12,20,30,42,56,68,78,84,86,80,68,54,40,28,20,14,10,7,5,4,4,5,7,10,14,18,20,18,14,10],
+    good: [4,8,14,22,32,44,54,60,62,58,50,44,40,38,40,44,50,58,62,60,52,44,36,28,20,14,10,7,5,4,3,2],
+    // flat bars read as "no data yet" — deliberately not a bell curve,
+    // since a pending photo hasn't actually been measured.
+    pending: new Array(32).fill(20),
+  };
+
+  // real SD cards keep separate auto-numbered folders (100CANON,
+  // 101CANON, …) — these three back both the import checklist and the
+  // sidebar's folder shortcuts, so the two stay in sync by construction.
+  const FOLDER_META = {
+    '100CANON': { path: 'D:\\DCIM\\100CANON', count: 8, sizeGB: 2.1 },
+    '101CANON': { path: 'D:\\DCIM\\101CANON', count: 4, sizeGB: 1.0 },
+    '102CANON': { path: 'D:\\DCIM\\102CANON', count: 8, sizeGB: 2.1 },
+  };
+  // folders the user has actually confirmed importing — empty until
+  // the import modal is confirmed, then remembered for the session so
+  // switching between them never requires re-picking a directory.
+  let importedFolders = [];
+  // checkbox staging for the "combine" action — separate from
+  // state.folder (what's actually shown) so checking boxes never
+  // changes the view until the combine button is pressed.
+  let selectedFolderSet = new Set();
+  // whatever single-folder view was showing right before combining,
+  // so the toggle button can restore it exactly.
+  let previousFolderView = 'all';
+  // tracks whether the CURRENT view came from the combine button —
+  // independent of state.folder's shape, because combining every
+  // imported folder collapses to the plain 'all' string below (same
+  // value a direct "全部文件夹" click would produce) and a simple
+  // Array.isArray(state.folder) check can't tell those two apart.
+  let isCombinedView = false;
+
+  const state = { filter: 'all', folder: 'all', view: 'time', selected: new Set() };
+  // ids in the exact order the grid just rendered them — the fullscreen
+  // preview's prev/next buttons walk this, so they always match what's
+  // currently on screen (whatever filter/folder/view is active).
+  let currentVisibleIds = [];
+
+  const el = (sel) => document.querySelector(sel);
+  const contentEl = el('#content');
+
+  // a photo's tier is null until either the batch analyzer or a manual
+  // pick in the detail/compare view sets it — these two helpers are the
+  // single place that turns that null into a CSS class / label.
+  function tierClass(p) { return p.tier ? `tier-${p.tier}` : 'tier-pending'; }
+  function tierLabelOf(p) { return p.tier ? TIER_LABEL[p.tier] : PENDING_LABEL; }
+
+  function tierCounts() {
+    return {
+      all: PHOTOS.length,
+      pending: PHOTOS.filter(p => p.tier === null).length,
+      bad: PHOTOS.filter(p => p.tier === 'bad').length,
+      fix: PHOTOS.filter(p => p.tier === 'fix').length,
+      good: PHOTOS.filter(p => p.tier === 'good').length,
+    };
+  }
+
+  function refreshSidebarCounts() {
+    const c = tierCounts();
+    el('#cnt-all').textContent = c.all;
+    el('#cnt-pending').textContent = c.pending;
+    el('#cnt-bad').textContent = c.bad;
+    el('#cnt-fix').textContent = c.fix;
+    el('#cnt-good').textContent = c.good;
+  }
+
+  function refreshAnalyzeButton() {
+    const pending = tierCounts().pending;
+    el('#analyze-count').textContent = pending;
+    el('#btn-analyze').disabled = pending === 0;
+  }
+
+  function refreshToolbar() {
+    const n = state.selected.size;
+    el('#sel-count').textContent = n;
+    el('#btn-delete').disabled = n === 0;
+  }
+
+  function renderFolderNav() {
+    const nav = el('#folder-nav');
+    if (!importedFolders.length) {
+      nav.innerHTML = `<p class="side-label">文件夹</p><p class="folder-nav-empty">导入存储卡时勾选文件夹，之后会记忆在这里方便切换。</p>`;
+      return;
+    }
+    const folderIcon = '<svg class="folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>';
+    const isMulti = Array.isArray(state.folder);
+    const isFolderActive = (f) => isMulti ? state.folder.includes(f) : state.folder === f;
+    const allActive = state.folder === 'all' ? ' active' : '';
+
+    const items = importedFolders.map(f => {
+      const count = PHOTOS.filter(p => p.folder === f).length;
+      const active = isFolderActive(f) ? ' active' : '';
+      const checked = selectedFolderSet.has(f) ? ' checked' : '';
+      return `<div class="side-item folder-row${active}" data-folder="${f}" role="button" tabindex="0">
+        <input type="checkbox" class="folder-check" data-multi-folder="${f}"${checked} aria-label="选中 ${f} 以合并显示" />
+        ${folderIcon}<span class="folder-row-label">${(window.__folderNames && window.__folderNames[f]) || f}</span><span class="count">${count}</span>
+      </div>`;
+    }).join('');
+
+    // combine only makes sense with 2+ folders staged; once a combined
+    // view IS showing, the button always stays clickable so there's
+    // always a way back out, even if the user unchecks down to 0/1.
+    const combineDisabled = !isCombinedView && selectedFolderSet.size < 2;
+    const combineLabel = isCombinedView ? '↩ 返回单选' : '合并显示所选';
+    const combineBtn = importedFolders.length >= 2
+      ? `<button class="folder-combine-btn${isCombinedView ? ' active' : ''}" id="btn-combine-folders"${combineDisabled ? ' disabled' : ''}>${combineLabel}</button>`
+      : '';
+
+    nav.innerHTML = `
+      <div class="side-label-row"><p class="side-label">文件夹</p>${combineBtn}</div>
+      <button class="side-item${allActive}" data-folder="all">${folderIcon}全部文件夹<span class="count">${PHOTOS.length}</span></button>
+      ${items}`;
+  }
+
+  function cardHTML(p) {
+    const sel = state.selected.has(p.id) ? ' selected' : '';
+    const burst = p.burst ? `<span class="burst-badge">${p.burst}张</span>` : '';
+    return `
+      <div class="photo-card ${tierClass(p)}${sel}" data-id="${p.id}" data-od-id="photo-card-${p.id}">
+        <div class="photo-thumb" style="background-image:url('${p.thumbnail || ''}')">
+          <span class="photo-check" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path transform="translate(-1.3,0)" d="M4 12l6 6L20 6"/></svg>
+          </span>
+          ${burst}
+          <span class="tier-tag ${tierClass(p)}">${tierLabelOf(p)}</span>
+        </div>
+        <div class="photo-meta">
+          <div class="fname">${p.name}</div>
+          <div class="ftime">${p.time}</div>
+        </div>
+      </div>`;
+  }
+
+  function render() {
+    const list = PHOTOS.filter(p => {
+      const tierOk = state.filter === 'all' ? true : state.filter === 'pending' ? p.tier === null : p.tier === state.filter;
+      const folderOk = state.folder === 'all'
+        ? true
+        : Array.isArray(state.folder) ? state.folder.includes(p.folder) : p.folder === state.folder;
+      return tierOk && folderOk;
+    });
+    // the order photos actually land in the grid — captured here so the
+    // fullscreen preview's prev/next buttons walk the same sequence the
+    // user is browsing, whatever the current filter/folder/view is.
+    const visibleIds = [];
+    let html = '';
+    if (state.view === 'time') {
+      const days = [...new Set(list.map(p => p.day))];
+      days.forEach(d => {
+        const items = list.filter(p => p.day === d);
+        visibleIds.push(...items.map(p => p.id));
+        html += `<div class="group-header"><h3>${d}</h3><span class="group-count">${items.length} 张</span></div>
+                 <div class="grid">${items.map(cardHTML).join('')}</div>`;
+      });
+    } else {
+      const groups = [
+        { key: 'pending', label: PENDING_LABEL, dotVar: 'meta' },
+        { key: 'bad', label: TIER_LABEL.bad, dotVar: 'danger' },
+        { key: 'fix', label: TIER_LABEL.fix, dotVar: 'warn' },
+        { key: 'good', label: TIER_LABEL.good, dotVar: 'success' },
+      ];
+      groups.forEach(g => {
+        const items = list.filter(p => (g.key === 'pending' ? p.tier === null : p.tier === g.key));
+        if (!items.length) return;
+        visibleIds.push(...items.map(p => p.id));
+        html += `<div class="group-header"><span class="group-dot" style="background:var(--${g.dotVar})"></span><h3>${g.label}</h3><span class="group-count">${items.length} 张</span></div>
+                 <div class="grid">${items.map(cardHTML).join('')}</div>`;
+      });
+    }
+    currentVisibleIds = visibleIds;
+    contentEl.innerHTML = html || '<p style="color:var(--muted); padding:40px; text-align:center;">该分类下暂无照片</p>';
+    refreshSidebarCounts();
+    refreshAnalyzeButton();
+    refreshToolbar();
+    renderFolderNav();
+    updateFpNavButtons();
+  }
+
+  // single click anywhere on a card toggles selection; double click opens
+  // the fullscreen preview. Disambiguated via the native click's `detail`
+  // (the browser's own click-count-in-this-gesture counter) instead of a
+  // setTimeout — that removes the ~220ms "nothing happens yet" lag a
+  // debounce timer would otherwise put between tap and visible response.
+  contentEl.addEventListener('click', (e) => {
+    const card = e.target.closest('.photo-card');
+    if (!card || e.detail > 1) return; // detail>1 belongs to a dblclick gesture
+    const id = Number(card.dataset.id);
+    state.selected.has(id) ? state.selected.delete(id) : state.selected.add(id);
+    render();
+  });
+
+  contentEl.addEventListener('dblclick', (e) => {
+    const card = e.target.closest('.photo-card');
+    if (!card) return;
+    // the gesture's first click already toggled selection above — undo
+    // that (and re-render, so the grid underneath isn't left showing a
+    // stray "selected" card once the fullscreen preview closes) before
+    // opening fullscreen.
+    const id = Number(card.dataset.id);
+    state.selected.has(id) ? state.selected.delete(id) : state.selected.add(id);
+    render();
+    openFullscreenPreview(id);
+  });
+
+  el('#tier-nav').addEventListener('click', (e) => {
+    const btn = e.target.closest('.side-item');
+    if (!btn) return;
+    document.querySelectorAll('#tier-nav .side-item').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.filter = btn.dataset.filter;
+    render();
+  });
+
+  // folder shortcuts and tier filters are independent, AND'd dimensions —
+  // switching folders doesn't reset which quality tier you're looking at.
+  el('#folder-nav').addEventListener('click', (e) => {
+    const combineBtn = e.target.closest('#btn-combine-folders');
+    if (combineBtn) {
+      if (isCombinedView) {
+        state.folder = previousFolderView; // exit combine, restore prior view
+        isCombinedView = false;
+      } else {
+        if (selectedFolderSet.size < 2) return; // guarded by disabled; double-checked here too
+        // checking every imported folder IS "全部文件夹" — behave exactly
+        // as if the user had clicked that directly: no lingering combine
+        // state, no leftover checkmarks, nothing to "return" from. Half
+        // measures here (collapsing state.folder but keeping the combine
+        // button in its "exit" mode) would leave a view that's supposed
+        // to be the plain, stable "all" state still acting like it's one
+        // click away from reverting — confusing since there's nothing to
+        // revert to.
+        if (importedFolders.every(f => selectedFolderSet.has(f))) {
+          state.folder = 'all';
+          selectedFolderSet.clear();
+        } else {
+          previousFolderView = state.folder;
+          state.folder = [...selectedFolderSet];
+          isCombinedView = true;
+        }
+      }
+      render();
+      return;
+    }
+    if (e.target.closest('[data-multi-folder]')) return; // checkbox — handled by the change listener below
+    const btn = e.target.closest('[data-folder]');
+    // detail>1 is the dblclick gesture's second click — skip the
+    // (expensive, full-grid) re-render here so the browser's own
+    // double-click timing window doesn't get eaten by two renders,
+    // letting the dblclick handler below actually fire reliably.
+    if (!btn || e.detail > 1) return;
+    state.folder = btn.dataset.folder;
+    isCombinedView = false; // navigating directly always leaves combine mode
+    render();
+  });
+
+  // checking a folder only stages it for "combine" — it doesn't touch
+  // what's currently displayed, so this refreshes just the nav (to
+  // update the combine button's enabled state), never the grid.
+  el('#folder-nav').addEventListener('change', (e) => {
+    const cb = e.target.closest('[data-multi-folder]');
+    if (!cb) return;
+    cb.checked ? selectedFolderSet.add(cb.dataset.multiFolder) : selectedFolderSet.delete(cb.dataset.multiFolder);
+    renderFolderNav();
+  });
+
+  // double-clicking anywhere on a folder row is a second way to stage
+  // it for "combine" — equivalent to clicking its checkbox directly.
+  // A single click on the row still only switches the single-folder
+  // view (unchanged); this is purely additive.
+  el('#folder-nav').addEventListener('dblclick', (e) => {
+    const row = e.target.closest('.folder-row');
+    if (!row) return;
+    const f = row.dataset.folder;
+    const nowSelected = !selectedFolderSet.has(f);
+    nowSelected ? selectedFolderSet.add(f) : selectedFolderSet.delete(f);
+    renderFolderNav();
+    // the checkbox itself is a small target to notice at a glance —
+    // this is the confirmation that the double-click actually landed.
+    showToast(nowSelected ? `已选中「${f}」，可点击「合并显示所选」` : `已取消选中「${f}」`);
+  });
+
+  el('#view-toggle').addEventListener('click', (e) => {
+    const btn = e.target.closest('.seg-item');
+    if (!btn) return;
+    document.querySelectorAll('#view-toggle .seg-item').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.view = btn.dataset.view;
+    render();
+  });
+
+  el('#btn-select-bad').addEventListener('click', () => {
+    PHOTOS.filter(p => p.tier === 'bad').forEach(p => state.selected.add(p.id));
+    render();
+    showToast('已选中全部「废片」照片');
+  });
+
+  el('#btn-delete').addEventListener('click', () => {
+    const ids = [...state.selected];
+    if (!ids.length) return;
+    state.selected.clear();
+    commitDeleteAfterUndoWindow(ids, `已删除 ${ids.length} 张照片`);
+  });
+
+  // ── import modal ──────────────────────────────────────────────
+  const importModal = el('#import-modal');
+  const folderCheckList = el('#folder-check-list');
+  function openImport() { importModal.classList.remove('hidden'); refreshImportStats(); }
+  function closeImport() { importModal.classList.add('hidden'); }
+
+  function refreshImportStats() {
+    const checked = Array.from(folderCheckList.querySelectorAll('input:checked'));
+    const count = checked.reduce((sum, cb) => sum + Number(cb.dataset.count), 0);
+    const size = checked.reduce((sum, cb) => sum + Number(cb.dataset.size), 0);
+    el('#import-stat-count').textContent = count;
+    el('#import-stat-size').textContent = size.toFixed(1);
+  }
+  folderCheckList.addEventListener('change', refreshImportStats);
+
+  // openImport();  // 停用：不再启动就弹假的存储卡检测弹窗
+  el('#btn-cancel-import').addEventListener('click', closeImport);
+  el('#btn-confirm-import').addEventListener('click', () => {
+    const checked = Array.from(folderCheckList.querySelectorAll('input:checked')).map(cb => cb.value);
+    checked.forEach(f => { if (!importedFolders.includes(f)) importedFolders.push(f); });
+    const total = checked.reduce((sum, f) => sum + (FOLDER_META[f]?.count || 0), 0);
+    closeImport();
+    render();
+    showToast(checked.length
+      ? `已导入 ${total} 张照片 · 前往侧边栏点击「开始分析」`
+      : '未勾选任何文件夹，没有导入照片');
+  });
+  el('#btn-reimport').addEventListener('click', async () => {
+    showToast('正在导入…');
+    const result = await window.pywebview.api.choose_folder_and_scan();
+    if (result && result.error) { showToast('导入失败：' + result.error); return; }
+    PHOTOS.length = 0;
+    (result.photos || []).forEach(p => PHOTOS.push(p));
+    await refreshFolders();
+    render();
+    renderFolderNav();
+    showToast(`已导入，共 ${PHOTOS.length} 张`);
+  });
+
+  // ── manual analysis trigger ───────────────────────────────────────
+  // photos come in with tier:null (see PHOTOS above) — nothing gets
+  // classified until the user explicitly asks for it here.
+  el('#btn-analyze').addEventListener('click', () => {
+    const pending = PHOTOS.filter(p => p.tier === null);
+    if (!pending.length) return;
+    el('#btn-analyze').disabled = true;
+    showToast(`正在分析 ${pending.length} 张照片的清晰度与曝光…`);
+    setTimeout(() => {
+      pending.forEach(p => { p.tier = p.autoTier; });
+      render();
+      showToast(`已完成 ${pending.length} 张照片的分析`);
+    }, 900);
+  });
+
+  // ── fullscreen photo preview ─────────────────────────────────────
+  const fpOverlay = el('#fp-overlay');
+  const fpStage = el('#fp-stage');
+  const fpImage = el('#fp-image');
+  const fpSidebar = el('#fp-sidebar');
+  const fpToggleInfo = el('#fp-toggle-info');
+  let fpPhotoId = null;
+  let fpZoom = 1;
+  let fpPan = { x: 0, y: 0 };
+
+  function buildHist(svgSel, data, color) {
+    const svg = el(svgSel);
+    const w = svg.viewBox.baseVal.width, h = svg.viewBox.baseVal.height;
+    const bw = w / data.length;
+    const max = Math.max(...data);
+    svg.innerHTML = data.map((v, i) => {
+      const bh = (v / max) * (h - 2);
+      return `<rect x="${(i * bw).toFixed(2)}" y="${(h - bh).toFixed(2)}" width="${(bw - 0.6).toFixed(2)}" height="${bh.toFixed(2)}" fill="${color}" opacity="0.9"/>`;
+    }).join('');
+  }
+
+  function refreshExpoSpots(p) {
+    if (p.tier === null) {
+      ['es1','es2','es3','es4'].forEach(id2 => el('#' + id2).classList.remove('show'));
+      el('#expo-note').textContent = '该照片尚未分析，暂无曝光标注数据。';
+      return;
+    }
+    const spotCount = p.tier === 'bad' ? 4 : p.tier === 'fix' ? 2 : 0;
+    ['es1','es2','es3','es4'].forEach((id2, i) => {
+      el('#' + id2).classList.toggle('show', el('#expo-switch').classList.contains('on') && i < spotCount);
+    });
+    el('#expo-note').textContent = spotCount === 0
+      ? '该照片未检测到明显过曝或欠曝区域。'
+      : `检测到 ${spotCount} 处过曝/欠曝区域，开启开关可在大图上查看标注。`;
+  }
+
+  function applyFpTransform() {
+    fpImage.style.transform = `translate(${fpPan.x}px, ${fpPan.y}px) scale(${fpZoom})`;
+    fpImage.classList.toggle('zoomed', fpZoom > 1);
+    el('#fp-hint').textContent = fpZoom > 1 ? zoomHint(fpZoom) : '滚轮缩放放大 · 可拖动查看';
+  }
+
+  function clampFpPan(zoom, pan) {
+    const rect = fpStage.getBoundingClientRect();
+    const maxX = (zoom - 1) * rect.width / 2;
+    const maxY = (zoom - 1) * rect.height / 2;
+    return { x: Math.max(-maxX, Math.min(maxX, pan.x)), y: Math.max(-maxY, Math.min(maxY, pan.y)) };
+  }
+
+  function openFullscreenPreview(id) {
+    const p = PHOTOS.find(p => p.id === id);
+    if (!p) return;
+    fpPhotoId = id;
+    fpZoom = 1;
+    fpPan = { x: 0, y: 0 };
+    applyFpTransform();
+    fpImage.style.backgroundImage = `url('${p.thumbnail || ''}')`;
+    el('#dp-fname').textContent = p.name;
+    el('#dp-cam').textContent = p.cam;
+    el('#dp-iso').textContent = p.iso;
+    el('#dp-shutter').textContent = p.shutter;
+    el('#dp-aperture').textContent = p.aperture;
+    el('#dp-focal').textContent = p.focal;
+    el('#dp-size').textContent = p.size;
+    el('#dp-time').textContent = p.time;
+
+    document.querySelectorAll('#dp-tier-picker .tier-btn').forEach(b => b.classList.toggle('active', b.dataset.tier === p.tier));
+
+    const preset = HIST_PRESETS[p.tier] || HIST_PRESETS.pending;
+    buildHist('#hist-main', preset, 'var(--fg-2)');
+    buildHist('#hist-r', preset.map(v => v * 0.9), 'var(--chan-r)');
+    buildHist('#hist-g', preset.map(v => v * 1.0), 'var(--chan-g)');
+    buildHist('#hist-b', preset.map(v => v * 0.8), 'var(--chan-b)');
+    refreshExpoSpots(p);
+    updateFpNavButtons();
+
+    fpOverlay.classList.add('open');
+  }
+
+  function closeFullscreenPreview() {
+    fpOverlay.classList.remove('open');
+    fpPhotoId = null;
+  }
+  el('#fp-close').addEventListener('click', closeFullscreenPreview);
+  document.addEventListener('keydown', (e) => {
+    if (!fpOverlay.classList.contains('open')) return;
+    if (e.key === 'Escape') { closeFullscreenPreview(); return; }
+    // delegate to the buttons themselves — a disabled button's .click()
+    // is a no-op, so this gets the boundary guard for free.
+    if (e.key === 'ArrowLeft') { el('#fp-prev').click(); return; }
+    if (e.key === 'ArrowRight') { el('#fp-next').click(); return; }
+  });
+
+  // prev/next walk currentVisibleIds — the same order the grid just
+  // rendered — so they match whatever filter/folder is active. Disabled
+  // at either end (no wraparound) and also disabled if the open photo
+  // fell out of the visible set entirely (e.g. its tier changed and the
+  // active filter no longer matches it).
+  function updateFpNavButtons() {
+    const idx = currentVisibleIds.indexOf(fpPhotoId);
+    el('#fp-prev').disabled = idx <= 0;
+    el('#fp-next').disabled = idx === -1 || idx >= currentVisibleIds.length - 1;
+  }
+  el('#fp-prev').addEventListener('click', () => {
+    const idx = currentVisibleIds.indexOf(fpPhotoId);
+    if (idx > 0) openFullscreenPreview(currentVisibleIds[idx - 1]);
+  });
+  el('#fp-next').addEventListener('click', () => {
+    const idx = currentVisibleIds.indexOf(fpPhotoId);
+    if (idx !== -1 && idx < currentVisibleIds.length - 1) openFullscreenPreview(currentVisibleIds[idx + 1]);
+  });
+
+  fpToggleInfo.addEventListener('click', () => {
+    const willOpen = !fpSidebar.classList.contains('open');
+    fpSidebar.classList.toggle('open', willOpen);
+    fpStage.classList.toggle('info-open', willOpen);
+    fpToggleInfo.classList.toggle('active', willOpen);
+    // the stage resize (see .fp-stage's CSS transition) is what actually
+    // shrinks the photo to fit — background-size:contain re-fits itself
+    // every frame for free. Once that resize settles, re-clamp the pan
+    // so a zoomed-in offset can't end up pointing outside the new box.
+  });
+  fpStage.addEventListener('transitionend', (e) => {
+    if (e.propertyName !== 'right') return;
+    fpPan = clampFpPan(fpZoom, fpPan);
+    applyFpTransform();
+  });
+
+  el('#expo-switch').addEventListener('click', () => {
+    el('#expo-switch').classList.toggle('on');
+    const p = PHOTOS.find(p => p.id === fpPhotoId);
+    if (p) refreshExpoSpots(p);
+  });
+
+  el('#dp-tier-picker').addEventListener('click', (e) => {
+    const btn = e.target.closest('.tier-btn');
+    if (!btn || !fpPhotoId) return;
+    const p = PHOTOS.find(p => p.id === fpPhotoId);
+    p.tier = btn.dataset.tier;
+    window.pywebview.api.set_tier(p.id, p.tier);  // 持久化改判到数据库
+    document.querySelectorAll('#dp-tier-picker .tier-btn').forEach(b => b.classList.toggle('active', b === btn));
+    render();
+    showToast(`已将该照片手动标记为「${TIER_LABEL[p.tier]}」`);
+  });
+
+  // wheel over the big image zooms it; once zoomed, drag to pan.
+  fpStage.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    fpZoom += e.deltaY < 0 ? 0.4 : -0.4;
+    fpZoom = Math.min(8, Math.max(1, fpZoom));
+    fpPan = clampFpPan(fpZoom, fpPan);
+    applyFpTransform();
+  }, { passive: false });
+
+  let fpDrag = null;
+  fpImage.addEventListener('mousedown', (e) => {
+    if (fpZoom <= 1) return;
+    fpDrag = { startX: e.clientX, startY: e.clientY, panX: fpPan.x, panY: fpPan.y };
+    fpImage.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!fpDrag) return;
+    fpPan = clampFpPan(fpZoom, { x: fpDrag.panX + (e.clientX - fpDrag.startX), y: fpDrag.panY + (e.clientY - fpDrag.startY) });
+    fpImage.style.transform = `translate(${fpPan.x}px, ${fpPan.y}px) scale(${fpZoom})`;
+  });
+  window.addEventListener('mouseup', () => {
+    if (!fpDrag) return;
+    fpImage.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    fpDrag = null;
+  });
+
+  // ── compare overlay — fullscreen adaptive grid ─────────────────
+  const COMPARE_MAX = 4;
+  const compareOverlay = el('#compare-overlay');
+  const compareBody = el('#compare-body');
+  const addPopover = el('#add-popover');
+  const btnAddCompare = el('#btn-add-compare');
+  let compareIds = [];
+  const zoomMap = new Map(); // id -> current zoom level
+  const panMap = new Map();  // id -> {x, y} translate offset while zoomed
+
+  function gridDims(n) {
+    if (n <= 1) return { cols: 1, rows: 1 };
+    if (n === 2) return { cols: 2, rows: 1 };
+    if (n === 3) return { cols: 3, rows: 1 };
+    return { cols: 2, rows: 2 };
+  }
+
+  function zoomHint(zoom) {
+    return zoom > 1 ? `拖动查看 · ${zoom.toFixed(1)}×` : '滚轮缩放放大';
+  }
+
+  function openCompare() {
+    let ids = [...state.selected];
+    if (ids.length < 2) ids = PHOTOS.slice(0, 3).map(p => p.id);
+    if (ids.length > COMPARE_MAX) {
+      showToast(`最多同屏对比 ${COMPARE_MAX} 张，已自动选取前 ${COMPARE_MAX} 张`);
+    }
+    compareIds = ids.slice(0, COMPARE_MAX);
+    renderCompare();
+    compareOverlay.classList.add('open');
+  }
+
+  function renderCompare() {
+    const items = compareIds.map(id => PHOTOS.find(p => p.id === id)).filter(Boolean);
+    compareIds = items.map(p => p.id); // drop any that got deleted from the library
+
+    const { cols, rows } = gridDims(items.length || 1);
+    compareBody.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    compareBody.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+
+    el('#compare-title').textContent = `多图对比 · 已选 ${items.length} 张`;
+    const atLimit = items.length >= COMPARE_MAX;
+    el('#compare-limit-note').textContent = atLimit
+      ? `已达上限 · 最多支持 ${COMPARE_MAX} 张同屏对比`
+      : `最多支持 ${COMPARE_MAX} 张同屏对比`;
+    btnAddCompare.disabled = atLimit;
+
+    compareBody.innerHTML = items.map(p => {
+      const zoom = zoomMap.get(p.id) || 1;
+      const pan = panMap.get(p.id) || { x: 0, y: 0 };
+      const tierBtns = ['bad', 'fix', 'good'].map(t => `
+        <button class="cc-tier-btn${p.tier === t ? ' active' : ''}" data-tier="${t}" data-cc-tier="${t}" data-id="${p.id}">${TIER_LABEL[t]}</button>`).join('');
+      return `
+        <div class="compare-cell ${tierClass(p)}" data-id="${p.id}" data-od-id="compare-cell-${p.id}">
+          <div class="compare-cell-img${zoom > 1 ? ' zoomed' : ''}" data-zoomimg="${p.id}" style="background-image:url('${p.thumbnail || ''}'); transform:translate(${pan.x}px, ${pan.y}px) scale(${zoom});"></div>
+          <div class="compare-cell-bar">
+            <span class="cc-fname">${p.name}</span>
+            <div class="cc-tier-row">${tierBtns}</div>
+            <div class="cc-icons">
+              <button class="cc-icon-btn cc-del" data-del="${p.id}" aria-label="从对比中移除"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+              <button class="cc-icon-btn cc-trash" data-trash="${p.id}" aria-label="删除照片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></svg></button>
+            </div>
+          </div>
+          <span class="cc-zoom-hint">${zoomHint(zoom)}</span>
+        </div>`;
+    }).join('');
+  }
+
+  function removeFromCompare(id) {
+    compareIds = compareIds.filter(x => x !== id);
+    zoomMap.delete(id);
+    panMap.delete(id);
+    if (compareIds.length === 0) {
+      compareOverlay.classList.remove('open');
+      showToast('已退出对比模式');
+      return;
+    }
+    renderCompare();
+  }
+
+  // 从后端拉取文件夹列表并更新侧边栏所需的 importedFolders + 短名映射
+  async function refreshFolders() {
+    const folders = await window.pywebview.api.list_folders();
+    importedFolders = folders.map(f => f.folder);
+    window.__folderNames = {};
+    folders.forEach(f => { window.__folderNames[f.folder] = f.name; });
+  }
+
+  // 统一的删除逻辑：先从前端乐观移除（用户立刻看到消失），弹5秒可撤销toast，
+  // 撤销则恢复、后端从未被调用；超时才真正调后端把文件送进回收站+删库记录。
+  function commitDeleteAfterUndoWindow(ids, label) {
+    if (!ids.length) return;
+    const idSet = new Set(ids);
+    const removed = PHOTOS.filter(p => idSet.has(p.id));
+    PHOTOS = PHOTOS.filter(p => !idSet.has(p.id));
+    ids.forEach(id => { state.selected.delete(id); zoomMap.delete(id); panMap.delete(id); });
+    compareIds = compareIds.filter(x => !idSet.has(x));
+    render();
+    renderFolderNav();
+    if (compareOverlay.classList.contains('open')) {
+      if (compareIds.length === 0) compareOverlay.classList.remove('open');
+      else renderCompare();
+    }
+    let committed = false;
+    const timer = setTimeout(async () => {
+      committed = true;
+      try {
+        const res = await window.pywebview.api.delete_photos(ids);
+        if (res && res.error) showToast('删除失败：' + res.error);
+        else await refreshFolders(), renderFolderNav();
+      } catch (e) { showToast('删除失败：' + e); }
+    }, 5000);
+    showToast(label, {
+      undo: () => {
+        if (committed) return;
+        clearTimeout(timer);
+        PHOTOS = PHOTOS.concat(removed).sort((a, b) => b.id - a.id);
+        render();
+        renderFolderNav();
+      },
+    });
+  }
+
+  function trashPhoto(id) {
+    const p = PHOTOS.find(x => x.id === id);
+    if (!p) return;
+    commitDeleteAfterUndoWindow([id], `已删除 ${p.name}`);
+  }
+
+  el('#btn-compare').addEventListener('click', openCompare);
+  el('#btn-exit-compare').addEventListener('click', () => {
+    compareOverlay.classList.remove('open');
+    addPopover.classList.remove('open');
+  });
+
+  compareBody.addEventListener('click', (e) => {
+    const delBtn = e.target.closest('[data-del]');
+    if (delBtn) { removeFromCompare(Number(delBtn.dataset.del)); return; }
+
+    const trashBtn = e.target.closest('[data-trash]');
+    if (trashBtn) { trashPhoto(Number(trashBtn.dataset.trash)); return; }
+
+    const tierBtn = e.target.closest('[data-cc-tier]');
+    if (tierBtn) {
+      const p = PHOTOS.find(p => p.id === Number(tierBtn.dataset.id));
+      if (p) {
+        p.tier = tierBtn.dataset.ccTier;
+        window.pywebview.api.set_tier(p.id, p.tier);  // 持久化改判到数据库
+        renderCompare();
+        render();
+        showToast(`已将该照片手动标记为「${TIER_LABEL[p.tier]}」`);
+      }
+      return;
+    }
+  });
+
+  // independent per-cell zoom — wheel over a cell scales & crops only
+  // that cell's image, never spilling into neighbouring grid cells
+  // (the wrapping .compare-cell has overflow:hidden). Existing pan is
+  // re-clamped every time zoom changes so it never drifts out of bounds.
+  function clampPan(cell, zoom, pan) {
+    const rect = cell.getBoundingClientRect();
+    const maxX = (zoom - 1) * rect.width / 2;
+    const maxY = (zoom - 1) * rect.height / 2;
+    return { x: Math.max(-maxX, Math.min(maxX, pan.x)), y: Math.max(-maxY, Math.min(maxY, pan.y)) };
+  }
+
+  compareBody.addEventListener('wheel', (e) => {
+    const cell = e.target.closest('.compare-cell');
+    if (!cell) return;
+    e.preventDefault();
+    const id = Number(cell.dataset.id);
+    let zoom = zoomMap.get(id) || 1;
+    zoom += e.deltaY < 0 ? 0.4 : -0.4;
+    zoom = Math.min(8, Math.max(1, zoom));
+    zoomMap.set(id, zoom);
+
+    const pan = clampPan(cell, zoom, panMap.get(id) || { x: 0, y: 0 });
+    panMap.set(id, pan);
+
+    const img = cell.querySelector('[data-zoomimg]');
+    if (img) {
+      img.style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
+      img.classList.toggle('zoomed', zoom > 1);
+    }
+    const hint = cell.querySelector('.cc-zoom-hint');
+    if (hint) hint.textContent = zoomHint(zoom);
+  }, { passive: false });
+
+  // drag-to-pan once zoomed in — mousedown on the image starts the drag,
+  // window-level move/up so the drag keeps tracking even if the cursor
+  // slips past the cell edge.
+  let dragState = null;
+  compareBody.addEventListener('mousedown', (e) => {
+    const img = e.target.closest('.compare-cell-img');
+    if (!img) return;
+    const cell = img.closest('.compare-cell');
+    const id = Number(cell.dataset.id);
+    if ((zoomMap.get(id) || 1) <= 1) return;
+    const pan = panMap.get(id) || { x: 0, y: 0 };
+    dragState = { id, img, cell, startX: e.clientX, startY: e.clientY, panX: pan.x, panY: pan.y };
+    img.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragState) return;
+    const { id, img, cell, startX, startY, panX, panY } = dragState;
+    const zoom = zoomMap.get(id) || 1;
+    const pan = clampPan(cell, zoom, { x: panX + (e.clientX - startX), y: panY + (e.clientY - startY) });
+    panMap.set(id, pan);
+    img.style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
+  });
+  window.addEventListener('mouseup', () => {
+    if (!dragState) return;
+    dragState.img.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    dragState = null;
+  });
+
+  function openAddPopover() {
+    if (btnAddCompare.disabled) return;
+    const available = PHOTOS.filter(p => !compareIds.includes(p.id));
+    addPopover.innerHTML = available.length
+      ? available.map(p => `
+          <button class="add-popover-item" data-add="${p.id}">
+            <span class="add-popover-thumb" style="background-image:url('${p.thumbnail || ''}')"></span>
+            <span class="fname">${p.name}</span>
+          </button>`).join('')
+      : '<p class="add-popover-empty">没有更多可添加的照片</p>';
+
+    // anchored to the header button (same row as "已选 N 张 / 退出对比"),
+    // so the list always renders in full instead of being squeezed into
+    // a grid cell that gets crowded out by the photos themselves.
+    const btnRect = btnAddCompare.getBoundingClientRect();
+    const overlayRect = compareOverlay.getBoundingClientRect();
+    addPopover.style.top = (btnRect.bottom - overlayRect.top + 6) + 'px';
+    addPopover.style.right = (overlayRect.right - btnRect.right) + 'px';
+    addPopover.style.left = 'auto';
+    addPopover.classList.add('open');
+  }
+  btnAddCompare.addEventListener('click', openAddPopover);
+
+  addPopover.addEventListener('click', (e) => {
+    const item = e.target.closest('[data-add]');
+    if (!item) return;
+    const id = Number(item.dataset.add);
+    if (compareIds.length < COMPARE_MAX) compareIds.push(id);
+    addPopover.classList.remove('open');
+    renderCompare();
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!addPopover.classList.contains('open')) return;
+    if (e.target.closest('#add-popover') || e.target.closest('#btn-add-compare')) return;
+    addPopover.classList.remove('open');
+  });
+
+  // ── theme toggle ────────────────────────────────────────────────
+  const MOON_PATH = '<path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>';
+  const SUN_PATH = '<circle cx="12" cy="12" r="4.5"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>';
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    el('#theme-icon').innerHTML = theme === 'dark' ? SUN_PATH : MOON_PATH;
+    localStorage.setItem('shiguang-theme', theme);
+  }
+  el('#btn-theme').addEventListener('click', () => {
+    const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    applyTheme(next);
+  });
+  applyTheme(localStorage.getItem('shiguang-theme') || 'light');
+
+  // ── grid density ────────────────────────────────────────────────
+  function applyDensity(density) {
+    document.documentElement.setAttribute('data-density', density);
+    document.querySelectorAll('#density-toggle .seg-item').forEach(b => b.classList.toggle('active', b.dataset.density === density));
+    localStorage.setItem('shiguang-density', density);
+  }
+  el('#density-toggle').addEventListener('click', (e) => {
+    const btn = e.target.closest('.seg-item');
+    if (btn) applyDensity(btn.dataset.density);
+  });
+  applyDensity(localStorage.getItem('shiguang-density') || 'comfortable');
+
+  // ── toast ───────────────────────────────────────────────────────
+  let toastTimer;
+  function showToast(msg, opts) {
+    const t = el('#toast');
+    t.innerHTML = '';
+    const label = document.createElement('span');
+    label.textContent = msg;
+    t.appendChild(label);
+    if (opts && opts.undo) {
+      const undoBtn = document.createElement('button');
+      undoBtn.className = 'toast-undo';
+      undoBtn.textContent = '撤销';
+      undoBtn.addEventListener('click', () => {
+        opts.undo();
+        t.classList.remove('show');
+        clearTimeout(toastTimer);
+      });
+      t.appendChild(undoBtn);
+    }
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), opts && opts.undo ? 5000 : 2600);
+  }
+
+  // 后端扫描过程中会周期性调用它推送进度
+  window.onImportProgress = function (done, total) {
+    showToast(`正在导入 ${done}/${total}`);
+  };
+
+  async function initFromBackend() {
+    try {
+      const photos = await window.pywebview.api.list_photos();
+      PHOTOS.length = 0;
+      photos.forEach(p => PHOTOS.push(p));
+      await refreshFolders();
+      render();
+      renderFolderNav();
+    } catch (e) {
+      showToast('加载照片失败：' + e);
+    }
+  }
+
+  if (window.pywebview && window.pywebview.api) initFromBackend();
+  else window.addEventListener('pywebviewready', initFromBackend);
+})();
+</script>
+</body>
+</html>

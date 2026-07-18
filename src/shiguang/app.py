@@ -7,7 +7,8 @@ from .api import THUMB_CACHE_DIR, Api
 from .thumb_server import start_thumb_server
 
 DB_PATH = Path.home() / ".shiguang" / "library.sqlite"
-FRONTEND_INDEX = Path(__file__).resolve().parent.parent.parent / "frontend" / "index.html"
+# Phase 2A 起入口页换成接入真实数据的完整原型 app.html（旧的极简验证页 index.html 保留备用）
+FRONTEND_INDEX = Path(__file__).resolve().parent.parent.parent / "frontend" / "app.html"
 
 
 def main():
