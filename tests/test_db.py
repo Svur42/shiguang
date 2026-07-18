@@ -87,3 +87,62 @@ def test_list_folders_returns_folder_with_counts(tmp_path):
 
     by_path = {f["folder"]: f["count"] for f in folders}
     assert by_path == {"/card/A": 2, "/card/B": 1}
+
+
+def test_new_columns_exist_and_default_null(tmp_path):
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path="/f/a.jpg", folder="/f", filename="a.jpg", thumbnail=b"a")
+    row = db.list_photos(conn)[0]
+    for col in ("capture_time", "iso", "shutter", "aperture", "focal", "cam", "size"):
+        assert col in row.keys()
+        assert row[col] is None
+
+
+def test_update_metadata(tmp_path):
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path="/f/a.jpg", folder="/f", filename="a.jpg", thumbnail=b"a")
+    pid = db.list_photos(conn)[0]["id"]
+
+    db.update_metadata(conn, pid, {
+        "capture_time": "2024-06-14 09:12:03",
+        "iso": 100, "shutter": "1/400s", "aperture": "f/2.8",
+        "focal": "85mm", "cam": "Canon EOS R5", "size": "45.2MB",
+    })
+
+    row = db.list_photos(conn)[0]
+    assert row["capture_time"] == "2024-06-14 09:12:03"
+    assert row["iso"] == 100
+    assert row["cam"] == "Canon EOS R5"
+
+
+def test_migration_adds_columns_to_old_db(tmp_path):
+    import sqlite3
+    dbfile = tmp_path / "old.sqlite"
+    old = sqlite3.connect(dbfile)
+    old.execute("""CREATE TABLE photos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE NOT NULL,
+        folder TEXT NOT NULL, filename TEXT NOT NULL, thumbnail BLOB,
+        tier TEXT, auto_tier TEXT)""")
+    old.execute("INSERT INTO photos (path, folder, filename) VALUES ('/f/old.jpg','/f','old.jpg')")
+    old.commit()
+    old.close()
+
+    conn = db.connect(dbfile)
+
+    row = db.list_photos(conn)[0]
+    assert row["filename"] == "old.jpg"
+    assert row["capture_time"] is None
+    assert "iso" in row.keys()
+
+
+def test_list_photos_orders_by_capture_time_then_id(tmp_path):
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path="/f/a.jpg", folder="/f", filename="a.jpg", thumbnail=b"a")
+    db.insert_photo(conn, path="/f/b.jpg", folder="/f", filename="b.jpg", thumbnail=b"b")
+    db.insert_photo(conn, path="/f/c.jpg", folder="/f", filename="c.jpg", thumbnail=b"c")
+    ids = {r["filename"]: r["id"] for r in db.list_photos(conn)}
+    db.update_metadata(conn, ids["b.jpg"], {"capture_time": "2024-06-14 08:00:00"})
+    db.update_metadata(conn, ids["c.jpg"], {"capture_time": "2024-06-14 20:00:00"})
+
+    order = [r["filename"] for r in db.list_photos(conn)]
+    assert order == ["c.jpg", "b.jpg", "a.jpg"]

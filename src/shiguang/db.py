@@ -9,9 +9,28 @@ CREATE TABLE IF NOT EXISTS photos (
     filename TEXT NOT NULL,
     thumbnail BLOB,
     tier TEXT,
-    auto_tier TEXT
+    auto_tier TEXT,
+    capture_time TEXT,
+    iso INTEGER,
+    shutter TEXT,
+    aperture TEXT,
+    focal TEXT,
+    cam TEXT,
+    size TEXT
 );
 """
+
+
+_META_COLUMNS = ["capture_time", "iso", "shutter", "aperture", "focal", "cam", "size"]
+
+
+def _migrate(conn):
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(photos)")}
+    for col in _META_COLUMNS:
+        if col not in existing:
+            coltype = "INTEGER" if col == "iso" else "TEXT"
+            conn.execute(f"ALTER TABLE photos ADD COLUMN {col} {coltype}")
+    conn.commit()
 
 
 def connect(db_path):
@@ -22,6 +41,7 @@ def connect(db_path):
     conn.row_factory = sqlite3.Row
     conn.execute(SCHEMA)
     conn.commit()
+    _migrate(conn)
     return conn
 
 
@@ -38,9 +58,22 @@ def list_photos(conn):
     # 每张照片被插入（导入）的先后。这样用户一导入完，新照片就出现在列表顶部，
     # 不会像"按文件名排序"那样被打散、埋进已有的上千张照片中间找不到。
     cur = conn.execute(
-        "SELECT id, path, folder, filename, thumbnail, tier, auto_tier FROM photos ORDER BY id DESC"
+        """SELECT id, path, folder, filename, thumbnail, tier, auto_tier,
+                  capture_time, iso, shutter, aperture, focal, cam, size
+           FROM photos
+           ORDER BY (capture_time IS NULL), capture_time DESC, id DESC"""
     )
     return cur.fetchall()
+
+
+def update_metadata(conn, photo_id, meta):
+    cols = [c for c in _META_COLUMNS if c in meta]
+    if not cols:
+        return
+    assignments = ", ".join(f"{c} = ?" for c in cols)
+    values = [meta[c] for c in cols] + [photo_id]
+    conn.execute(f"UPDATE photos SET {assignments} WHERE id = ?", values)
+    conn.commit()
 
 
 def set_manual_tier(conn, photo_id, tier):
