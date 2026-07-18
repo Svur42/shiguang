@@ -315,3 +315,62 @@ def test_backfill_metadata_updates_photos_with_existing_files(tmp_path, monkeypa
     rows = {r["filename"]: r for r in db.list_photos(conn)}
     assert rows["real.jpg"]["capture_time"] == "2024-06-14 09:12:03"
     assert rows["gone.nef"]["capture_time"] is None
+
+
+import shiguang.raw_thumb as raw_thumb
+
+
+def test_get_preview_generates_and_returns_url(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    preview_dir = tmp_path / "preview_cache"
+    monkeypatch.setattr(api_module, "PREVIEW_CACHE_DIR", preview_dir)
+    from PIL import Image
+    real = tmp_path / "real.jpg"
+    Image.new("RGB", (4000, 3000), (10, 20, 30)).save(real)
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path=str(real), folder=str(tmp_path), filename="real.jpg", thumbnail=b"t")
+    api = _make_api(conn)
+    pid = db.list_photos(conn)[0]["id"]
+
+    result = api.get_preview(pid)
+
+    assert result["url"] == f"{THUMB_BASE_URL}preview_cache/{pid}.jpg"
+    assert result["error"] is None
+    cache_file = preview_dir / f"{pid}.jpg"
+    assert cache_file.exists()
+    from PIL import Image as PImage
+    w, h = PImage.open(cache_file).size
+    assert max(w, h) <= 2560
+    assert max(w, h) > 512
+
+
+def test_get_preview_reuses_existing_cache(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    preview_dir = tmp_path / "preview_cache"
+    preview_dir.mkdir()
+    monkeypatch.setattr(api_module, "PREVIEW_CACHE_DIR", preview_dir)
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path="/whatever/real.jpg", folder="/whatever", filename="real.jpg", thumbnail=b"t")
+    api = _make_api(conn)
+    pid = db.list_photos(conn)[0]["id"]
+    (preview_dir / f"{pid}.jpg").write_bytes(b"cached-preview")
+
+    result = api.get_preview(pid)
+
+    assert result["url"] == f"{THUMB_BASE_URL}preview_cache/{pid}.jpg"
+    assert (preview_dir / f"{pid}.jpg").read_bytes() == b"cached-preview"
+
+
+def test_get_preview_returns_none_when_original_missing(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    preview_dir = tmp_path / "preview_cache"
+    monkeypatch.setattr(api_module, "PREVIEW_CACHE_DIR", preview_dir)
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path="/nonexistent/gone.nef", folder="/n", filename="gone.nef", thumbnail=b"t")
+    api = _make_api(conn)
+    pid = db.list_photos(conn)[0]["id"]
+
+    result = api.get_preview(pid)
+
+    assert result["url"] is None
+    assert result["error"] is None

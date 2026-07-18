@@ -7,6 +7,7 @@ from send2trash import send2trash
 
 from . import db
 from . import exif_read
+from . import raw_thumb
 from . import scanner
 
 # 缩略图磁盘缓存：list_photos() 之前是把每张缩略图编码成base64文字整个塞进返回值，
@@ -58,6 +59,26 @@ class Api:
                 }
             )
         return photos
+
+    def get_preview(self, photo_id):
+        """按需生成/返回 2560px 屏幕适配预览的URL，供全屏细看用（比512缩略图清晰）。
+        已缓存则直接返回；没缓存则从原文件生成（RAW优先内嵌预览）；原文件不可访问则
+        返回 url=None（前端继续用缩略图，不报错）。"""
+        try:
+            PREVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            cache_file = PREVIEW_CACHE_DIR / f"{photo_id}.jpg"
+            if not cache_file.exists():
+                paths = db.get_paths_for_ids(self.conn, [photo_id])
+                if not paths:
+                    return {"url": None, "error": None}
+                src = paths[0]
+                if not os.path.exists(src):
+                    return {"url": None, "error": None}
+                data = raw_thumb.extract_thumbnail(src, max_size=2560)
+                cache_file.write_bytes(data)
+            return {"url": f"{self.thumb_base_url}preview_cache/{photo_id}.jpg", "error": None}
+        except Exception:
+            return {"url": None, "error": traceback.format_exc()}
 
     # ── 窗口控制（无边框窗口下由前端标题栏按钮调用）──────────────
     def minimize_window(self):
