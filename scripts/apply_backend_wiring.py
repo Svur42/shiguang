@@ -262,6 +262,8 @@ once(
           if (fpPhotoId === id) {
             fpImage.style.backgroundImage = `url('${res.url}')`;
             fpImage.classList.remove('fp-loading');
+            window.__previewShown = window.__previewShown || {};
+            window.__previewShown[id] = res.url;  // 供过曝开关关闭时还原到高清
           }
         };
         hi.src = res.url;
@@ -280,6 +282,78 @@ once(
       });
     })();""",
     "全屏blur-up换高清+预加载",
+)
+
+# A13. 详情面板真实直方图 + 过曝欠曝占比（替换写死的HIST_PRESETS假直方图）
+once(
+    """    const preset = HIST_PRESETS[p.tier] || HIST_PRESETS.pending;
+    buildHist('#hist-main', preset, 'var(--fg-2)');
+    buildHist('#hist-r', preset.map(v => v * 0.9), 'var(--chan-r)');
+    buildHist('#hist-g', preset.map(v => v * 1.0), 'var(--chan-g)');
+    buildHist('#hist-b', preset.map(v => v * 0.8), 'var(--chan-b)');
+    refreshExpoSpots(p);""",
+    """    // 真实直方图 + 过曝欠曝占比：异步拿真实数据填（fpPhotoId===id 防切走）
+    window.pywebview.api.get_analysis(id).then(res => {
+      if (fpPhotoId !== id || !res || res.histograms == null) return;
+      buildHist('#hist-main', res.histograms.main, 'var(--fg-2)');
+      buildHist('#hist-r', res.histograms.r, 'var(--chan-r)');
+      buildHist('#hist-g', res.histograms.g, 'var(--chan-g)');
+      buildHist('#hist-b', res.histograms.b, 'var(--chan-b)');
+      window.__expoOverlay = window.__expoOverlay || {};
+      window.__expoOverlay[id] = res.overlay_url;
+      const note = document.getElementById('expo-note');
+      if (note) note.textContent = (res.over_pct > 0 || res.under_pct > 0)
+        ? `过曝像素约 ${res.over_pct}%，欠曝像素约 ${res.under_pct}%。开启开关在大图上高亮。`
+        : '未检测到明显过曝或欠曝像素。';
+    });
+    refreshExpoSpots(p);""",
+    "详情真实直方图+过曝占比",
+)
+
+# A14. gut refreshExpoSpots：只隐藏4个写死框、不再设note（note交给get_analysis真实占比）
+once(
+    """  function refreshExpoSpots(p) {
+    if (p.tier === null) {
+      ['es1','es2','es3','es4'].forEach(id2 => el('#' + id2).classList.remove('show'));
+      el('#expo-note').textContent = '该照片尚未分析，暂无曝光标注数据。';
+      return;
+    }
+    const spotCount = p.tier === 'bad' ? 4 : p.tier === 'fix' ? 2 : 0;
+    ['es1','es2','es3','es4'].forEach((id2, i) => {
+      el('#' + id2).classList.toggle('show', el('#expo-switch').classList.contains('on') && i < spotCount);
+    });
+    el('#expo-note').textContent = spotCount === 0
+      ? '该照片未检测到明显过曝或欠曝区域。'
+      : `检测到 ${spotCount} 处过曝/欠曝区域，开启开关可在大图上查看标注。`;
+  }""",
+    """  function refreshExpoSpots(p) {
+    // 真实高亮走整图切换(见expo-switch)，这些写死的框一律隐藏；note由get_analysis真实占比填
+    ['es1','es2','es3','es4'].forEach(id2 => el('#' + id2).classList.remove('show'));
+  }""",
+    "gut refreshExpoSpots",
+)
+
+# A15. 过曝开关：打开切成高亮图、关闭还原到高清/缩略图
+once(
+    """  el('#expo-switch').addEventListener('click', () => {
+    el('#expo-switch').classList.toggle('on');
+    const p = PHOTOS.find(p => p.id === fpPhotoId);
+    if (p) refreshExpoSpots(p);
+  });""",
+    """  el('#expo-switch').addEventListener('click', () => {
+    el('#expo-switch').classList.toggle('on');
+    const on = el('#expo-switch').classList.contains('on');
+    const ov = (window.__expoOverlay || {})[fpPhotoId];
+    const cur = PHOTOS.find(p => p.id === fpPhotoId);
+    if (on && ov) {
+      fpImage.style.backgroundImage = `url('${ov}')`;   // 高亮图(过曝红/欠曝蓝)
+    } else if (cur) {
+      // 关掉：还原到当前显示的图(有高清用高清，否则缩略图)
+      const back = (window.__previewShown && window.__previewShown[fpPhotoId]) || cur.thumbnail || '';
+      fpImage.style.backgroundImage = `url('${back}')`;
+    }
+  });""",
+    "过曝开关切高亮图",
 )
 
 # ══════════ B. 无边框窗口外观 ══════════
