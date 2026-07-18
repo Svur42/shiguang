@@ -21,7 +21,8 @@ def main():
         "拾光 ShiGuang",
         str(FRONTEND_INDEX),
         js_api=api,
-        width=1000,
-        height=700,
+        width=1200,
+        height=800,
+        frameless=True,  # 无边框：原型自带的标题栏就是真窗口顶部，避免套两层窗口/重复的系统边框
     )
     webview.start()

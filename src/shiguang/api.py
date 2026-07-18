@@ -54,6 +54,22 @@ class Api:
             )
         return photos
 
+    # ── 窗口控制（无边框窗口下由前端标题栏按钮调用）──────────────
+    def minimize_window(self):
+        webview.windows[0].minimize()
+
+    def toggle_maximize(self):
+        win = webview.windows[0]
+        if getattr(self, "_maximized", False):
+            win.restore()
+            self._maximized = False
+        else:
+            win.maximize()
+            self._maximized = True
+
+    def close_window(self):
+        webview.windows[0].destroy()
+
     def set_tier(self, photo_id, tier):
         db.set_manual_tier(self.conn, photo_id, tier)
         return {"error": None}
