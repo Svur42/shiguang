@@ -1463,6 +1463,8 @@ svg { display: block; }
     fpPan = { x: 0, y: 0 };
     applyFpTransform();
     fpImage.style.backgroundImage = `url('${p.thumbnail || ''}')`;
+    // 切到新照片时复位过曝开关（否则开关显示"开"但图是新照片的普通图，状态错位）
+    el('#expo-switch').classList.remove('on');
     // 先糊后清：缩略图(512)已铺上，去请求2560高清预览，加载完平滑换上、去模糊
     fpImage.classList.add('fp-loading');
     window.pywebview.api.get_preview(id).then(res => {
@@ -1470,10 +1472,13 @@ svg { display: block; }
         const hi = new Image();
         hi.onload = () => {
           if (fpPhotoId === id) {
-            fpImage.style.backgroundImage = `url('${res.url}')`;
-            fpImage.classList.remove('fp-loading');
             window.__previewShown = window.__previewShown || {};
             window.__previewShown[id] = res.url;  // 供过曝开关关闭时还原到高清
+            // 只有当前没开过曝高亮时才把背景换成高清，否则会把用户正看的高亮图冲掉
+            if (!el('#expo-switch').classList.contains('on')) {
+              fpImage.style.backgroundImage = `url('${res.url}')`;
+            }
+            fpImage.classList.remove('fp-loading');
           }
         };
         hi.src = res.url;
@@ -1534,6 +1539,8 @@ svg { display: block; }
     // is a no-op, so this gets the boundary guard for free.
     if (e.key === 'ArrowLeft') { el('#fp-prev').click(); return; }
     if (e.key === 'ArrowRight') { el('#fp-next').click(); return; }
+    // 若焦点在输入框(如搜索框)，不把数字/字母当快捷键，避免既打分又输入
+    if (/^(INPUT|TEXTAREA)$/.test((e.target && e.target.tagName) || '')) return;
     // 快捷键打分：1废片 2可修 3精选 0待分析；e 用外部程序打开原文件
     const kp = PHOTOS.find(x => x.id === fpPhotoId);
     if (kp && ['1','2','3','0'].includes(e.key)) {
