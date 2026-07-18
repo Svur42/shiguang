@@ -75,3 +75,15 @@ def test_get_paths_for_ids_returns_file_paths(tmp_path):
     paths = db.get_paths_for_ids(conn, [photo_id])
 
     assert paths == ["/fake/a.jpg"]
+
+
+def test_list_folders_returns_folder_with_counts(tmp_path):
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path="/card/A/1.jpg", folder="/card/A", filename="1.jpg", thumbnail=b"1")
+    db.insert_photo(conn, path="/card/A/2.jpg", folder="/card/A", filename="2.jpg", thumbnail=b"2")
+    db.insert_photo(conn, path="/card/B/3.jpg", folder="/card/B", filename="3.jpg", thumbnail=b"3")
+
+    folders = db.list_folders(conn)
+
+    by_path = {f["folder"]: f["count"] for f in folders}
+    assert by_path == {"/card/A": 2, "/card/B": 1}

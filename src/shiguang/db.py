@@ -65,3 +65,10 @@ def delete_photos(conn, photo_ids):
     placeholders = ",".join("?" for _ in photo_ids)
     conn.execute(f"DELETE FROM photos WHERE id IN ({placeholders})", list(photo_ids))
     conn.commit()
+
+
+def list_folders(conn):
+    cur = conn.execute(
+        "SELECT folder, COUNT(*) AS count FROM photos GROUP BY folder ORDER BY MAX(id) DESC"
+    )
+    return [{"folder": row["folder"], "count": row["count"]} for row in cur.fetchall()]
