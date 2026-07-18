@@ -50,6 +50,10 @@
 
     document.getElementById('btn-import').addEventListener('click', async () => {
       const result = await window.pywebview.api.choose_folder_and_scan();
+      if (result.error) {
+        alert('导入失败：\n' + result.error);
+        return;
+      }
       renderPhotos(result.photos);
     });
 

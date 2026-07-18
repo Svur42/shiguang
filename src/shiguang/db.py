@@ -16,7 +16,9 @@ CREATE TABLE IF NOT EXISTS photos (
 
 def connect(db_path):
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    # check_same_thread=False: pywebview 把 js_api 方法调用派发到独立的后台线程执行，
+    # 跟创建这个连接的主线程不是同一个线程，sqlite3 默认会拒绝跨线程使用同一连接。
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute(SCHEMA)
     conn.commit()
