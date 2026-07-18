@@ -503,6 +503,13 @@ svg { display: block; }
  * language as the import modal. */
 .fp-stage {
   position: absolute; top: 0; left: 0; bottom: 0; right: 0;
+  /* without this, a zoomed-in photo's transform:scale() paints past its
+   * own box — and since this positioned overlay always paints above the
+   * static-positioned titlebar regardless of DOM order, the overflow was
+   * bleeding up and covering the window controls. compare mode's per-cell
+   * zoom already clips the same way; this brings fullscreen preview in
+   * line with it. */
+  overflow: hidden;
   transform: scale(0.97);
   transition: right var(--motion-base) var(--ease-standard), transform var(--motion-emphasized) var(--ease-emphasized);
 }
@@ -1669,8 +1676,8 @@ svg { display: block; }
     folders.forEach(f => { window.__folderNames[f.folder] = f.name; });
   }
 
-  // 统一的删除逻辑：先从前端乐观移除（用户立刻看到消失），弹5秒可撤销toast，
-  // 撤销则恢复、后端从未被调用；超时才真正调后端把文件送进回收站+删库记录。
+  // 统一删除逻辑：先前端乐观移除（立刻消失），弹5秒可撤销toast，撤销则恢复、
+  // 后端从未被调用；超时才真正调后端把文件送进回收站+删库记录。
   function commitDeleteAfterUndoWindow(ids, label) {
     if (!ids.length) return;
     const idSet = new Set(ids);
@@ -1690,7 +1697,7 @@ svg { display: block; }
       try {
         const res = await window.pywebview.api.delete_photos(ids);
         if (res && res.error) showToast('删除失败：' + res.error);
-        else await refreshFolders(), renderFolderNav();
+        else { await refreshFolders(); renderFolderNav(); }
       } catch (e) { showToast('删除失败：' + e); }
     }, 5000);
     showToast(label, {
@@ -1889,7 +1896,6 @@ svg { display: block; }
     toastTimer = setTimeout(() => t.classList.remove('show'), opts && opts.undo ? 5000 : 2600);
   }
 
-  // 后端扫描过程中会周期性调用它推送进度
   window.onImportProgress = function (done, total) {
     showToast(`正在导入 ${done}/${total}`);
   };

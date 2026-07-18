@@ -1,0 +1,315 @@
+# -*- coding: utf-8 -*-
+"""把 Open Design 设计工作台导出的纯前端原型，接上真实后端，生成 frontend/app.html。
+
+用途（方式C：外观归工作台、接线归这里）：
+  你在设计工作台改完 UI 外观后，运行本脚本即可把接后端的逻辑重新打上去：
+    cd shiguang && .venv/Scripts/python.exe scripts/apply_backend_wiring.py
+
+它做的事：读取工作台原文件（纯设计版、假数据），套用下面所有"接线"改动，
+写出 frontend/app.html（真实数据版）。每处改动都做唯一性校验，若工作台大改
+导致某个锚点匹配不上，会明确报出是哪一处，方便定位手工修。
+
+工作台原文件路径（如变化改这里）：
+"""
+from pathlib import Path
+
+SRC = Path(
+    r"C:\Users\s1949\AppData\Roaming\Open Design\namespaces\release-stable-win"
+    r"\data\projects\e75c54c2-937e-435f-9975-00613aaf7efa\shiguang-photo-culler.html"
+)
+DST = Path(__file__).resolve().parent.parent / "frontend" / "app.html"
+
+html = SRC.read_text(encoding="utf-8")
+applied = []
+
+
+def once(old, new, label):
+    global html
+    n = html.count(old)
+    if n != 1:
+        raise SystemExit(f"[失败] {label}: 期望精确匹配1处，实际{n}处。锚点前80字符:\n  {old[:80]!r}")
+    html = html.replace(old, new)
+    applied.append(label)
+
+
+def times(old, new, expect, label):
+    global html
+    n = html.count(old)
+    if n != expect:
+        raise SystemExit(f"[失败] {label}: 期望{expect}处，实际{n}处。锚点:\n  {old[:80]!r}")
+    html = html.replace(old, new)
+    applied.append(f"{label}(x{expect})")
+
+
+# ══════════ A. 数据接线（替代写死的假数据/假交互）══════════
+
+# A1. 4处缩略图地址 → 真实http地址
+times("assets/photos/${p.file}", "${p.thumbnail || ''}", 4, "缩略图地址")
+
+# A2. PHOTOS 改为可变空数组，启动时从后端拉；演示数据改名为死代码
+once(
+    "  const PHOTOS = [\n",
+    "  let PHOTOS = [];   // 真实照片在初始化时从后端拉取；下面这份是原型演示数据，已停用\n  const PHOTOS_DEMO = [\n",
+    "PHOTOS声明",
+)
+
+# A3. 侧边栏文件夹显示末级短名而非整条长路径
+once(
+    '<span class="folder-row-label">${f}</span>',
+    '<span class="folder-row-label">${(window.__folderNames && window.__folderNames[f]) || f}</span>',
+    "文件夹短名显示",
+)
+
+# A4. 去掉启动时自动弹出的假导入弹窗
+once(
+    "  openImport();\n",
+    "  // openImport();  // 停用：不再启动就弹假的存储卡检测弹窗\n",
+    "去掉自动openImport",
+)
+
+# A5. 「导入新存储卡…」接真实导入
+once(
+    "  el('#btn-reimport').addEventListener('click', openImport);",
+    """  el('#btn-reimport').addEventListener('click', async () => {
+    showToast('正在导入…');
+    const result = await window.pywebview.api.choose_folder_and_scan();
+    if (result && result.error) { showToast('导入失败：' + result.error); return; }
+    PHOTOS.length = 0;
+    (result.photos || []).forEach(p => PHOTOS.push(p));
+    await refreshFolders();
+    render();
+    renderFolderNav();
+    showToast(`已导入，共 ${PHOTOS.length} 张`);
+  });""",
+    "btn-reimport接真实导入",
+)
+
+# A6. 详情面板手动改判 → 持久化
+once(
+    """    const p = PHOTOS.find(p => p.id === fpPhotoId);
+    p.tier = btn.dataset.tier;
+    document.querySelectorAll('#dp-tier-picker .tier-btn').forEach(b => b.classList.toggle('active', b === btn));""",
+    """    const p = PHOTOS.find(p => p.id === fpPhotoId);
+    p.tier = btn.dataset.tier;
+    window.pywebview.api.set_tier(p.id, p.tier);  // 持久化改判到数据库
+    document.querySelectorAll('#dp-tier-picker .tier-btn').forEach(b => b.classList.toggle('active', b === btn));""",
+    "详情面板改判持久化",
+)
+
+# A7. 对比模式手动改判 → 持久化
+once(
+    """        p.tier = tierBtn.dataset.ccTier;
+        renderCompare();
+        render();""",
+    """        p.tier = tierBtn.dataset.ccTier;
+        window.pywebview.api.set_tier(p.id, p.tier);  // 持久化改判到数据库
+        renderCompare();
+        render();""",
+    "对比模式改判持久化",
+)
+
+# A8. trashPhoto 改为统一删除逻辑 + 新增 refreshFolders/commitDeleteAfterUndoWindow
+once(
+    """  function trashPhoto(id) {
+    const idx = PHOTOS.findIndex(p => p.id === id);
+    if (idx === -1) return;
+    const [removed] = PHOTOS.splice(idx, 1);
+    compareIds = compareIds.filter(x => x !== id);
+    state.selected.delete(id);
+    zoomMap.delete(id);
+    panMap.delete(id);
+    render();
+    if (compareIds.length === 0) {
+      compareOverlay.classList.remove('open');
+    } else {
+      renderCompare();
+    }
+    showToast(`已删除 ${removed.name}`, {
+      undo: () => {
+        PHOTOS.splice(idx, 0, removed);
+        render();
+      },
+    });
+  }""",
+    """  // 从后端拉取文件夹列表并更新侧边栏所需的 importedFolders + 短名映射
+  async function refreshFolders() {
+    const folders = await window.pywebview.api.list_folders();
+    importedFolders = folders.map(f => f.folder);
+    window.__folderNames = {};
+    folders.forEach(f => { window.__folderNames[f.folder] = f.name; });
+  }
+
+  // 统一删除逻辑：先前端乐观移除（立刻消失），弹5秒可撤销toast，撤销则恢复、
+  // 后端从未被调用；超时才真正调后端把文件送进回收站+删库记录。
+  function commitDeleteAfterUndoWindow(ids, label) {
+    if (!ids.length) return;
+    const idSet = new Set(ids);
+    const removed = PHOTOS.filter(p => idSet.has(p.id));
+    PHOTOS = PHOTOS.filter(p => !idSet.has(p.id));
+    ids.forEach(id => { state.selected.delete(id); zoomMap.delete(id); panMap.delete(id); });
+    compareIds = compareIds.filter(x => !idSet.has(x));
+    render();
+    renderFolderNav();
+    if (compareOverlay.classList.contains('open')) {
+      if (compareIds.length === 0) compareOverlay.classList.remove('open');
+      else renderCompare();
+    }
+    let committed = false;
+    const timer = setTimeout(async () => {
+      committed = true;
+      try {
+        const res = await window.pywebview.api.delete_photos(ids);
+        if (res && res.error) showToast('删除失败：' + res.error);
+        else { await refreshFolders(); renderFolderNav(); }
+      } catch (e) { showToast('删除失败：' + e); }
+    }, 5000);
+    showToast(label, {
+      undo: () => {
+        if (committed) return;
+        clearTimeout(timer);
+        PHOTOS = PHOTOS.concat(removed).sort((a, b) => b.id - a.id);
+        render();
+        renderFolderNav();
+      },
+    });
+  }
+
+  function trashPhoto(id) {
+    const p = PHOTOS.find(x => x.id === id);
+    if (!p) return;
+    commitDeleteAfterUndoWindow([id], `已删除 ${p.name}`);
+  }""",
+    "trashPhoto改造+删除助手",
+)
+
+# A9. 批量删除走统一逻辑
+once(
+    """  el('#btn-delete').addEventListener('click', () => {
+    const n = state.selected.size;
+    for (let i = PHOTOS.length - 1; i >= 0; i--) {
+      if (state.selected.has(PHOTOS[i].id)) PHOTOS.splice(i, 1);
+    }
+    state.selected.clear();
+    render();
+    showToast(`已删除 ${n} 张照片`);
+  });""",
+    """  el('#btn-delete').addEventListener('click', () => {
+    const ids = [...state.selected];
+    if (!ids.length) return;
+    state.selected.clear();
+    commitDeleteAfterUndoWindow(ids, `已删除 ${ids.length} 张照片`);
+  });""",
+    "批量删除改造",
+)
+
+# A10. 结尾初始化：从后端拉真实数据 + 定义导入进度回调
+once(
+    "  render();\n})();",
+    """  window.onImportProgress = function (done, total) {
+    showToast(`正在导入 ${done}/${total}`);
+  };
+
+  async function initFromBackend() {
+    try {
+      const photos = await window.pywebview.api.list_photos();
+      PHOTOS.length = 0;
+      photos.forEach(p => PHOTOS.push(p));
+      await refreshFolders();
+      render();
+      renderFolderNav();
+    } catch (e) {
+      showToast('加载照片失败：' + e);
+    }
+  }
+
+  // 无边框窗口：标题栏三个按钮接后端窗口控制
+  document.getElementById('win-min').addEventListener('click', () => window.pywebview.api.minimize_window());
+  document.getElementById('win-max').addEventListener('click', () => window.pywebview.api.toggle_maximize());
+  document.getElementById('win-close').addEventListener('click', () => window.pywebview.api.close_window());
+
+  if (window.pywebview && window.pywebview.api) initFromBackend();
+  else window.addEventListener('pywebviewready', initFromBackend);
+})();""",
+    "结尾初始化接后端+窗口按钮",
+)
+
+# ══════════ B. 无边框窗口外观 ══════════
+
+# B1. app-window 去圆角+阴影（现在它就是真窗口，圆角会露黑角）
+once(
+    "  background: var(--bg);\n  border-radius: var(--radius-lg);\n  box-shadow: 0 40px 90px rgba(0,0,0,0.45);\n  overflow: hidden;",
+    "  background: var(--bg);\n  border-radius: 0;\n  box-shadow: none;\n  overflow: hidden;",
+    "app-window去圆角阴影",
+)
+
+# B2. body 深色背景 → --bg
+once(
+    "body {\n  margin: 0;\n  background: var(--backdrop);",
+    "body {\n  margin: 0;\n  background: var(--bg);",
+    "body背景改bg",
+)
+
+# B3. 标题栏可拖动
+once(
+    '  <div class="titlebar" data-od-id="titlebar">',
+    '  <div class="titlebar pywebview-drag-region" data-od-id="titlebar">',
+    "标题栏可拖动",
+)
+
+# B4. 窗口控制区不参与拖动
+once(
+    '    <div class="win-controls" data-od-id="window-controls">',
+    '    <div class="win-controls pywebview-no-drag" data-od-id="window-controls">',
+    "窗口控制区no-drag",
+)
+
+# B5-B7. 三个窗口按钮加 id
+once('      <button class="win-btn" aria-label="最小化">',
+     '      <button class="win-btn" id="win-min" aria-label="最小化">', "最小化按钮id")
+once('      <button class="win-btn" aria-label="最大化">',
+     '      <button class="win-btn" id="win-max" aria-label="最大化">', "最大化按钮id")
+once('      <button class="win-btn win-close" aria-label="关闭">',
+     '      <button class="win-btn win-close" id="win-close" aria-label="关闭">', "关闭按钮id")
+
+# B8. 标题栏文字去掉假路径
+once(
+    '    <span class="tl-title">拾光 ShiGuang — D:\\DCIM\\100CANON</span>',
+    '    <span class="tl-title">拾光 ShiGuang</span>',
+    "标题栏文字",
+)
+
+# ══════════ C. 小改动 ══════════
+
+# C1. 删除所选 → 删除已选
+once('删除所选（<span id="sel-count">0</span>）',
+     '删除已选（<span id="sel-count">0</span>）', "删除按钮文字")
+
+# C2. 分类视图未分析时给提示
+once(
+    """    } else {
+      const groups = [
+        { key: 'pending', label: PENDING_LABEL, dotVar: 'meta' },
+        { key: 'bad', label: TIER_LABEL.bad, dotVar: 'danger' },
+        { key: 'fix', label: TIER_LABEL.fix, dotVar: 'warn' },
+        { key: 'good', label: TIER_LABEL.good, dotVar: 'success' },
+      ];
+      groups.forEach(g => {""",
+    """    } else {
+      const analyzedCount = list.filter(p => p.tier !== null).length;
+      if (analyzedCount === 0) {
+        html = '<p style="color:var(--muted); padding:48px; text-align:center; line-height:1.7;">这些照片还没有分析。<br>点击左侧「开始分析」，软件会把它们分成 废片 / 可修 / 精选 后在这里按类查看。</p>';
+      }
+      const groups = analyzedCount === 0 ? [] : [
+        { key: 'pending', label: PENDING_LABEL, dotVar: 'meta' },
+        { key: 'bad', label: TIER_LABEL.bad, dotVar: 'danger' },
+        { key: 'fix', label: TIER_LABEL.fix, dotVar: 'warn' },
+        { key: 'good', label: TIER_LABEL.good, dotVar: 'success' },
+      ];
+      groups.forEach(g => {""",
+    "分类视图未分析提示",
+)
+
+DST.write_text(html, encoding="utf-8")
+print(f"[成功] 共套用 {len(applied)} 处接线改动，已写出 {DST}")
+for a in applied:
+    print("   -", a)
