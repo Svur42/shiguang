@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from . import db
+from . import exif_read
 from . import raw_thumb
 
 SUPPORTED_EXTENSIONS = raw_thumb.RAW_EXTENSIONS | raw_thumb.STANDARD_EXTENSIONS
@@ -18,12 +19,17 @@ def scan_folder(conn, folder_path, progress_callback=None):
             thumbnail = raw_thumb.extract_thumbnail(file_path)
         except Exception:
             thumbnail = None
+        try:
+            metadata = exif_read.read_metadata(file_path)
+        except Exception:
+            metadata = None
         db.insert_photo(
             conn,
             path=file_path,
             folder=str(folder_path),
             filename=file_path.name,
             thumbnail=thumbnail,
+            metadata=metadata,
         )
         count += 1
         if progress_callback:

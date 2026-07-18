@@ -45,10 +45,14 @@ def connect(db_path):
     return conn
 
 
-def insert_photo(conn, path, folder, filename, thumbnail):
+def insert_photo(conn, path, folder, filename, thumbnail, metadata=None):
+    metadata = metadata or {}
+    cols = ["path", "folder", "filename", "thumbnail"] + [c for c in _META_COLUMNS if c in metadata]
+    placeholders = ", ".join("?" for _ in cols)
+    values = [str(path), folder, filename, thumbnail] + [metadata[c] for c in _META_COLUMNS if c in metadata]
     conn.execute(
-        "INSERT OR IGNORE INTO photos (path, folder, filename, thumbnail) VALUES (?, ?, ?, ?)",
-        (str(path), folder, filename, thumbnail),
+        f"INSERT OR IGNORE INTO photos ({', '.join(cols)}) VALUES ({placeholders})",
+        values,
     )
     conn.commit()
 
