@@ -252,3 +252,65 @@ def test_delete_photos_continues_when_a_file_is_already_gone(tmp_path, monkeypat
 
     assert result["deleted"] == 1
     assert api.list_photos() == []
+
+
+import shiguang.exif_read as exif_read
+import os
+
+
+def test_list_photos_fills_real_params_and_day_time(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path="/f/a.jpg", folder="/f", filename="a.jpg", thumbnail=b"\xff\xd8\xff")
+    pid = db.list_photos(conn)[0]["id"]
+    db.update_metadata(conn, pid, {
+        "capture_time": "2024-06-14 09:12:03", "iso": 100, "shutter": "1/400s",
+        "aperture": "f/2.8", "focal": "85mm", "cam": "Canon EOS R5", "size": "45.2MB",
+    })
+    api = _make_api(conn)
+
+    p = api.list_photos()[0]
+
+    assert p["day"] == "2024年6月14日"
+    assert p["time"] == "09:12:03"
+    assert p["iso"] == 100
+    assert p["cam"] == "Canon EOS R5"
+    assert p["shutter"] == "1/400s"
+    assert p["aperture"] == "f/2.8"
+    assert p["focal"] == "85mm"
+    assert p["size"] == "45.2MB"
+
+
+def test_list_photos_day_time_none_when_no_capture_time(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path="/f/a.jpg", folder="/f", filename="a.jpg", thumbnail=b"\xff\xd8\xff")
+    api = _make_api(conn)
+
+    p = api.list_photos()[0]
+    assert p["day"] is None
+    assert p["time"] is None
+
+
+def test_backfill_metadata_updates_photos_with_existing_files(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    from PIL import Image
+    real = tmp_path / "real.jpg"
+    Image.new("RGB", (100, 100)).save(real)
+    gone = "/nonexistent/gone.nef"
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path=str(real), folder=str(tmp_path), filename="real.jpg", thumbnail=b"t")
+    db.insert_photo(conn, path=gone, folder="/nonexistent", filename="gone.nef", thumbnail=b"t")
+    api = _make_api(conn)
+
+    monkeypatch.setattr(exif_read, "read_metadata",
+                        lambda p: {"capture_time": "2024-06-14 09:12:03", "cam": "TestCam",
+                                   "iso": None, "shutter": None, "aperture": None, "focal": None, "size": None})
+
+    result = api.backfill_metadata()
+
+    assert result["updated"] == 1
+    assert result["error"] is None
+    rows = {r["filename"]: r for r in db.list_photos(conn)}
+    assert rows["real.jpg"]["capture_time"] == "2024-06-14 09:12:03"
+    assert rows["gone.nef"]["capture_time"] is None

@@ -1,3 +1,4 @@
+import os
 import traceback
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import webview
 from send2trash import send2trash
 
 from . import db
+from . import exif_read
 from . import scanner
 
 # 缩略图磁盘缓存：list_photos() 之前是把每张缩略图编码成base64文字整个塞进返回值，
@@ -31,6 +33,7 @@ class Api:
                 if not cache_file.exists():
                     cache_file.write_bytes(row["thumbnail"])
                 thumbnail_url = f"{self.thumb_base_url}{row['id']}.jpg"
+            day, time = exif_read._format_day_time(row["capture_time"])
             photos.append(
                 {
                     "id": row["id"],
@@ -39,17 +42,17 @@ class Api:
                     "thumbnail": thumbnail_url,
                     "tier": row["tier"],
                     "folder": row["folder"],
-                    # 本阶段还没有EXIF/评分，占位给None。字段名必须与原型读取处一致：
+                    # 字段名必须与原型读取处一致：
                     # 原型详情面板读 p.cam/p.shutter/p.aperture/p.focal（不是camera）
-                    "day": None,
-                    "time": None,
+                    "day": day,
+                    "time": time,
                     "burst": None,
-                    "iso": None,
-                    "cam": None,
-                    "shutter": None,
-                    "aperture": None,
-                    "focal": None,
-                    "size": None,
+                    "iso": row["iso"],
+                    "cam": row["cam"],
+                    "shutter": row["shutter"],
+                    "aperture": row["aperture"],
+                    "focal": row["focal"],
+                    "size": row["size"],
                 }
             )
         return photos
@@ -95,6 +98,31 @@ class Api:
             return {"deleted": len(photo_ids), "error": None}
         except Exception:
             return {"deleted": 0, "error": traceback.format_exc()}
+
+    def backfill_metadata(self):
+        try:
+            rows = db.list_photos(self.conn)
+            # 只补"从没读过"的：read_metadata 至少能填 size，所以 size 仍为 NULL
+            # 说明这张还没被补读过。避免 CR3/HEIC 这类读不出时间的每次启动都重读。
+            targets = [r for r in rows if r["capture_time"] is None and r["size"] is None]
+            updated = 0
+            total = len(targets)
+            for i, row in enumerate(targets, start=1):
+                path = row["path"]
+                if os.path.exists(path):
+                    meta = exif_read.read_metadata(path)
+                    db.update_metadata(self.conn, row["id"], meta)
+                    if meta.get("capture_time"):
+                        updated += 1
+                try:
+                    webview.windows[0].evaluate_js(
+                        f"window.onBackfillProgress && window.onBackfillProgress({i}, {total})"
+                    )
+                except Exception:
+                    pass
+            return {"updated": updated, "photos": self.list_photos(), "error": None}
+        except Exception:
+            return {"updated": 0, "photos": self.list_photos(), "error": traceback.format_exc()}
 
     def choose_folder_and_scan(self):
         try:
