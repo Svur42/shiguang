@@ -46,3 +46,22 @@ def list_photos(conn):
 def set_manual_tier(conn, photo_id, tier):
     conn.execute("UPDATE photos SET tier = ? WHERE id = ?", (tier, photo_id))
     conn.commit()
+
+
+def get_paths_for_ids(conn, photo_ids):
+    if not photo_ids:
+        return []
+    placeholders = ",".join("?" for _ in photo_ids)
+    cur = conn.execute(
+        f"SELECT path FROM photos WHERE id IN ({placeholders}) ORDER BY id",
+        list(photo_ids),
+    )
+    return [row["path"] for row in cur.fetchall()]
+
+
+def delete_photos(conn, photo_ids):
+    if not photo_ids:
+        return
+    placeholders = ",".join("?" for _ in photo_ids)
+    conn.execute(f"DELETE FROM photos WHERE id IN ({placeholders})", list(photo_ids))
+    conn.commit()

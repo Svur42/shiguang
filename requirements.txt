@@ -4,3 +4,4 @@ Pillow==10.4.0
 pytest==8.3.2
 # rawpy 0.21.0 是针对 numpy 1.x 编译的，numpy 2.x 会触发二进制不兼容（dtype size changed）
 numpy<2
+Send2Trash==1.8.3
