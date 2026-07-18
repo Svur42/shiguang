@@ -273,6 +273,12 @@ svg { display: block; }
   font-size: var(--text-sm); width: 100%;
 }
 .search-field svg { width: 14px; height: 14px; color: var(--meta); flex: 0 0 auto; }
+.search-field { flex: 0 0 auto; }
+.search-clear { display: none; border: none; background: transparent; color: var(--meta); cursor: pointer; font-size: 17px; line-height: 1; padding: 0 2px; flex: 0 0 auto; }
+.search-clear:hover { color: var(--fg); }
+.search-field.has-text .search-clear { display: block; }
+.search-field.searching svg { animation: sg-spin 0.7s linear infinite; }
+@keyframes sg-spin { to { transform: rotate(360deg); } }
 
 .btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -842,6 +848,7 @@ svg { display: block; }
         <div class="search-field">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.3-4.3"/></svg>
           <input type="text" id="search-input" placeholder="搜索文件名、标签…" />
+          <button id="search-clear" class="search-clear" type="button" aria-label="清除搜索" title="清除">×</button>
         </div>
         <button class="btn btn-sm" id="btn-filter">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
@@ -1266,6 +1273,7 @@ svg { display: block; }
   el('#tier-nav').addEventListener('click', (e) => {
     const btn = e.target.closest('.side-item');
     if (!btn) return;
+    resetSearchState();
     document.querySelectorAll('#tier-nav .side-item').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     state.filter = btn.dataset.filter;
@@ -1275,6 +1283,7 @@ svg { display: block; }
   // folder shortcuts and tier filters are independent, AND'd dimensions —
   // switching folders doesn't reset which quality tier you're looking at.
   el('#folder-nav').addEventListener('click', (e) => {
+    resetSearchState();
     const combineBtn = e.target.closest('#btn-combine-folders');
     if (combineBtn) {
       if (isCombinedView) {
@@ -1518,8 +1527,8 @@ svg { display: block; }
       window.__expoOverlay[id] = res.overlay_url;
       const note = document.getElementById('expo-note');
       if (note) note.textContent = (res.over_pct > 0 || res.under_pct > 0)
-        ? `过曝像素约 ${res.over_pct}%，欠曝像素约 ${res.under_pct}%。开启开关在大图上高亮。`
-        : '未检测到明显过曝或欠曝像素。';
+        ? `高光溢出约 ${res.over_pct}%，暗部无细节约 ${res.under_pct}%。少量溢出(天空/反光/太阳)属正常，只有落在主体上才值得注意。开启开关可高亮查看位置。`
+        : '未检测到明显高光溢出或暗部死黑。';
     });
     refreshExpoSpots(p);
     updateFpNavButtons();
@@ -1932,10 +1941,31 @@ svg { display: block; }
   });
   applyDensity(localStorage.getItem('shiguang-density') || 'comfortable');
 
-  // 搜索：按文件名实时过滤
+  // 搜索：防抖过滤(避免每敲一键就重画1000+张导致卡顿/丢字) + 加载动效 + 清除
+  function resetSearchState() {
+    const si = document.getElementById('search-input');
+    if (si) si.value = '';
+    state.search = '';
+    const sf = document.querySelector('.search-field');
+    if (sf) sf.classList.remove('has-text', 'searching');
+  }
+  function clearSearch() { resetSearchState(); render(); }
   (function () {
     const si = document.getElementById('search-input');
-    if (si) si.addEventListener('input', () => { state.search = si.value; render(); });
+    if (!si) return;
+    const sf = si.closest('.search-field');
+    let debTimer;
+    si.addEventListener('input', () => {
+      state.search = si.value;
+      if (sf) { sf.classList.toggle('has-text', si.value.length > 0); sf.classList.add('searching'); }
+      clearTimeout(debTimer);
+      debTimer = setTimeout(() => {
+        render();
+        if (sf) sf.classList.remove('searching');
+      }, 250);
+    });
+    const cb = document.getElementById('search-clear');
+    if (cb) cb.addEventListener('click', clearSearch);
   })();
   // 按机型筛选：点击循环切换 全部机型→各机型→全部
   (function () {

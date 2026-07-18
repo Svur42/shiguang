@@ -308,8 +308,8 @@ once(
       window.__expoOverlay[id] = res.overlay_url;
       const note = document.getElementById('expo-note');
       if (note) note.textContent = (res.over_pct > 0 || res.under_pct > 0)
-        ? `过曝像素约 ${res.over_pct}%，欠曝像素约 ${res.under_pct}%。开启开关在大图上高亮。`
-        : '未检测到明显过曝或欠曝像素。';
+        ? `高光溢出约 ${res.over_pct}%，暗部无细节约 ${res.under_pct}%。少量溢出(天空/反光/太阳)属正常，只有落在主体上才值得注意。开启开关可高亮查看位置。`
+        : '未检测到明显高光溢出或暗部死黑。';
     });
     refreshExpoSpots(p);""",
     "详情真实直方图+过曝占比",
@@ -425,10 +425,31 @@ once(
     "  applyDensity(localStorage.getItem('shiguang-density') || 'comfortable');",
     """  applyDensity(localStorage.getItem('shiguang-density') || 'comfortable');
 
-  // 搜索：按文件名实时过滤
+  // 搜索：防抖过滤(避免每敲一键就重画1000+张导致卡顿/丢字) + 加载动效 + 清除
+  function resetSearchState() {
+    const si = document.getElementById('search-input');
+    if (si) si.value = '';
+    state.search = '';
+    const sf = document.querySelector('.search-field');
+    if (sf) sf.classList.remove('has-text', 'searching');
+  }
+  function clearSearch() { resetSearchState(); render(); }
   (function () {
     const si = document.getElementById('search-input');
-    if (si) si.addEventListener('input', () => { state.search = si.value; render(); });
+    if (!si) return;
+    const sf = si.closest('.search-field');
+    let debTimer;
+    si.addEventListener('input', () => {
+      state.search = si.value;
+      if (sf) { sf.classList.toggle('has-text', si.value.length > 0); sf.classList.add('searching'); }
+      clearTimeout(debTimer);
+      debTimer = setTimeout(() => {
+        render();
+        if (sf) sf.classList.remove('searching');
+      }, 250);
+    });
+    const cb = document.getElementById('search-clear');
+    if (cb) cb.addEventListener('click', clearSearch);
   })();
   // 按机型筛选：点击循环切换 全部机型→各机型→全部
   (function () {
@@ -444,6 +465,45 @@ once(
     });
   })();""",
     "搜索+机型筛选监听",
+)
+
+# A22. 搜索框加清除(×)按钮
+once(
+    '          <input type="text" id="search-input" placeholder="搜索文件名、标签…" />',
+    '          <input type="text" id="search-input" placeholder="搜索文件名、标签…" />\n          <button id="search-clear" class="search-clear" type="button" aria-label="清除搜索" title="清除">×</button>',
+    "搜索框加清除按钮",
+)
+
+# A23. CSS：搜索框不被工具栏挤压 + 清除按钮 + 搜索中动效(放大镜转圈)
+once(
+    ".search-field svg { width: 14px; height: 14px; color: var(--meta); flex: 0 0 auto; }",
+    """.search-field svg { width: 14px; height: 14px; color: var(--meta); flex: 0 0 auto; }
+.search-field { flex: 0 0 auto; }
+.search-clear { display: none; border: none; background: transparent; color: var(--meta); cursor: pointer; font-size: 17px; line-height: 1; padding: 0 2px; flex: 0 0 auto; }
+.search-clear:hover { color: var(--fg); }
+.search-field.has-text .search-clear { display: block; }
+.search-field.searching svg { animation: sg-spin 0.7s linear infinite; }
+@keyframes sg-spin { to { transform: rotate(360deg); } }""",
+    "搜索框CSS(不压缩+清除+动效)",
+)
+
+# A24. 点质量档位导航时退出搜索
+once(
+    """  el('#tier-nav').addEventListener('click', (e) => {
+    const btn = e.target.closest('.side-item');
+    if (!btn) return;""",
+    """  el('#tier-nav').addEventListener('click', (e) => {
+    const btn = e.target.closest('.side-item');
+    if (!btn) return;
+    resetSearchState();""",
+    "档位导航退出搜索",
+)
+
+# A25. 点文件夹导航时退出搜索
+once(
+    "  el('#folder-nav').addEventListener('click', (e) => {\n    const combineBtn = e.target.closest('#btn-combine-folders');",
+    "  el('#folder-nav').addEventListener('click', (e) => {\n    resetSearchState();\n    const combineBtn = e.target.closest('#btn-combine-folders');",
+    "文件夹导航退出搜索",
 )
 
 # ══════════ B. 无边框窗口外观 ══════════

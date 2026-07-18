@@ -101,6 +101,16 @@ class Api:
             EXPO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
             image_bytes = None
             preview_file = PREVIEW_CACHE_DIR / f"{photo_id}.jpg"
+            # 尽量用2560高清预览做分析，这样过曝高亮图才清晰（不是糊的512）：
+            # 预览还没生成、但原文件可访问时，先生成2560预览再分析
+            if not preview_file.exists():
+                paths = db.get_paths_for_ids(self.conn, [photo_id])
+                if paths and os.path.exists(paths[0]):
+                    try:
+                        preview_file.parent.mkdir(parents=True, exist_ok=True)
+                        preview_file.write_bytes(raw_thumb.extract_thumbnail(paths[0], max_size=2560))
+                    except Exception:
+                        pass
             if preview_file.exists():
                 image_bytes = preview_file.read_bytes()
             if image_bytes is None:
