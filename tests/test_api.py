@@ -7,6 +7,9 @@ import shiguang.db as db
 from shiguang.api import Api
 
 
+THUMB_BASE_URL = "http://127.0.0.1:59999/"
+
+
 def _use_isolated_thumb_cache(monkeypatch, tmp_path):
     """避免测试往真实的 ~/.shiguang/thumb_cache 写文件、也避免不同测试之间
     因为照片id重复（每个测试都是从id=1开始）而互相污染缓存内容。"""
@@ -15,17 +18,23 @@ def _use_isolated_thumb_cache(monkeypatch, tmp_path):
     return cache_dir
 
 
-def test_list_photos_returns_file_uri_thumbnails(tmp_path, monkeypatch):
+def _make_api(conn):
+    return Api(conn, THUMB_BASE_URL)
+
+
+def test_list_photos_returns_http_url_thumbnails(tmp_path, monkeypatch):
     cache_dir = _use_isolated_thumb_cache(monkeypatch, tmp_path)
     conn = db.connect(tmp_path / "test.sqlite")
     db.insert_photo(conn, path="/fake/a.jpg", folder="/fake", filename="a.jpg", thumbnail=b"\xff\xd8\xff-fake-jpeg-bytes")
-    api = Api(conn)
+    api = _make_api(conn)
 
     photos = api.list_photos()
 
     assert len(photos) == 1
     assert photos[0]["filename"] == "a.jpg"
-    assert photos[0]["thumbnail"].startswith("file:")
+    # 返回的是本地缩略图HTTP服务器的地址，形如 http://127.0.0.1:端口/{id}.jpg
+    # 不能是 file:// —— WebView2 会拦截本地文件地址导致图片显示为受损
+    assert photos[0]["thumbnail"] == f"{THUMB_BASE_URL}{photos[0]['id']}.jpg"
     # 缓存文件真的写到磁盘上了，且内容和数据库里的缩略图字节一致
     cache_file = cache_dir / f"{photos[0]['id']}.jpg"
     assert cache_file.exists()
@@ -36,7 +45,7 @@ def test_list_photos_does_not_rewrite_existing_cache_file(tmp_path, monkeypatch)
     cache_dir = _use_isolated_thumb_cache(monkeypatch, tmp_path)
     conn = db.connect(tmp_path / "test.sqlite")
     db.insert_photo(conn, path="/fake/a.jpg", folder="/fake", filename="a.jpg", thumbnail=b"original-bytes")
-    api = Api(conn)
+    api = _make_api(conn)
 
     photos = api.list_photos()
     cache_file = cache_dir / f"{photos[0]['id']}.jpg"
@@ -53,7 +62,7 @@ def test_list_photos_returns_none_thumbnail_when_missing(tmp_path, monkeypatch):
     _use_isolated_thumb_cache(monkeypatch, tmp_path)
     conn = db.connect(tmp_path / "test.sqlite")
     db.insert_photo(conn, path="/fake/broken.jpg", folder="/fake", filename="broken.jpg", thumbnail=None)
-    api = Api(conn)
+    api = _make_api(conn)
 
     photos = api.list_photos()
 
@@ -81,7 +90,7 @@ def test_choose_folder_and_scan_imports_photos(tmp_path, monkeypatch):
     _use_isolated_thumb_cache(monkeypatch, tmp_path)
     Image.new("RGB", (100, 100)).save(tmp_path / "a.jpg")
     conn = db.connect(tmp_path / "test.sqlite")
-    api = Api(conn)
+    api = _make_api(conn)
 
     fake_window = _FakeWindow(dialog_result=[str(tmp_path)])
     monkeypatch.setattr("webview.windows", [fake_window])
@@ -98,7 +107,7 @@ def test_choose_folder_and_scan_pushes_progress_via_evaluate_js(tmp_path, monkey
     Image.new("RGB", (100, 100)).save(tmp_path / "a.jpg")
     Image.new("RGB", (100, 100)).save(tmp_path / "b.jpg")
     conn = db.connect(tmp_path / "test.sqlite")
-    api = Api(conn)
+    api = _make_api(conn)
 
     fake_window = _FakeWindow(dialog_result=[str(tmp_path)])
     monkeypatch.setattr("webview.windows", [fake_window])
@@ -113,7 +122,7 @@ def test_choose_folder_and_scan_pushes_progress_via_evaluate_js(tmp_path, monkey
 def test_choose_folder_and_scan_handles_cancelled_dialog(tmp_path, monkeypatch):
     _use_isolated_thumb_cache(monkeypatch, tmp_path)
     conn = db.connect(tmp_path / "test.sqlite")
-    api = Api(conn)
+    api = _make_api(conn)
 
     fake_window = _FakeWindow(dialog_result=None)
     monkeypatch.setattr("webview.windows", [fake_window])
@@ -134,7 +143,7 @@ def test_choose_folder_and_scan_from_background_thread_does_not_crash(tmp_path, 
     _use_isolated_thumb_cache(monkeypatch, tmp_path)
     Image.new("RGB", (100, 100)).save(tmp_path / "a.jpg")
     conn = db.connect(tmp_path / "test.sqlite")  # 主线程创建
-    api = Api(conn)
+    api = _make_api(conn)
 
     fake_window = _FakeWindow(dialog_result=[str(tmp_path)])
     monkeypatch.setattr("webview.windows", [fake_window])
@@ -155,7 +164,7 @@ def test_choose_folder_and_scan_from_background_thread_does_not_crash(tmp_path, 
 def test_choose_folder_and_scan_returns_error_field_instead_of_raising(tmp_path, monkeypatch):
     _use_isolated_thumb_cache(monkeypatch, tmp_path)
     conn = db.connect(tmp_path / "test.sqlite")
-    api = Api(conn)
+    api = _make_api(conn)
 
     fake_window = _FakeWindow(dialog_result=RuntimeError("模拟对话框炸了"))
     monkeypatch.setattr("webview.windows", [fake_window])

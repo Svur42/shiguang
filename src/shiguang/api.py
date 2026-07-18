@@ -8,14 +8,17 @@ from . import scanner
 
 # 缩略图磁盘缓存：list_photos() 之前是把每张缩略图编码成base64文字整个塞进返回值，
 # 几百张RAW照片叠起来能到几十MB，传输和网页解析都会很慢、甚至让返回值变得不可靠。
-# 改成"缩略图只写一次磁盘缓存文件、返回值只给文件路径"之后，返回值体积从几十MB
-# 降到几十KB量级（一条路径字符串通常远小于100字节）。
+# 现在改成"缩略图只写一次磁盘缓存文件、返回值只给一个 http 地址"，返回值体积从几十MB
+# 降到几十KB量级；图片本体由本地缩略图HTTP服务器（thumb_server）按需提供，界面通过
+# http://127.0.0.1:端口/{id}.jpg 加载（不能用 file:// 因为 WebView2 会拦截本地文件地址）。
 THUMB_CACHE_DIR = Path.home() / ".shiguang" / "thumb_cache"
 
 
 class Api:
-    def __init__(self, conn):
+    def __init__(self, conn, thumb_base_url):
         self.conn = conn
+        # thumb_base_url 形如 "http://127.0.0.1:53124/"，由 thumb_server 启动后提供
+        self.thumb_base_url = thumb_base_url
 
     def list_photos(self):
         THUMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -26,7 +29,7 @@ class Api:
                 cache_file = THUMB_CACHE_DIR / f"{row['id']}.jpg"
                 if not cache_file.exists():
                     cache_file.write_bytes(row["thumbnail"])
-                thumbnail_url = cache_file.as_uri()
+                thumbnail_url = f"{self.thumb_base_url}{row['id']}.jpg"
             photos.append(
                 {
                     "id": row["id"],
