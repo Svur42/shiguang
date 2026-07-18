@@ -242,6 +242,46 @@ once(
     "结尾初始化接后端+窗口按钮",
 )
 
+# A11. 全屏 blur-up 模糊类（先糊后清时给512缩略图加模糊，高清加载完去掉）
+once(
+    ".fp-image.zoomed.dragging { cursor: grabbing; transition: none; }",
+    ".fp-image.zoomed.dragging { cursor: grabbing; transition: none; }\n.fp-image.fp-loading { filter: blur(8px); }",
+    "全屏blur-up样式",
+)
+
+# A12. 全屏打开时先糊后清换2560高清 + 预加载相邻两张
+once(
+    "    fpImage.style.backgroundImage = `url('${p.thumbnail || ''}')`;",
+    """    fpImage.style.backgroundImage = `url('${p.thumbnail || ''}')`;
+    // 先糊后清：缩略图(512)已铺上，去请求2560高清预览，加载完平滑换上、去模糊
+    fpImage.classList.add('fp-loading');
+    window.pywebview.api.get_preview(id).then(res => {
+      if (res && res.url && fpPhotoId === id) {
+        const hi = new Image();
+        hi.onload = () => {
+          if (fpPhotoId === id) {
+            fpImage.style.backgroundImage = `url('${res.url}')`;
+            fpImage.classList.remove('fp-loading');
+          }
+        };
+        hi.src = res.url;
+      } else if (fpPhotoId === id) {
+        // 当前这张确实没高清(原文件缺失)才去模糊；陈旧请求(fpPhotoId!==id)静默丢弃不动UI
+        fpImage.classList.remove('fp-loading');
+      }
+    });
+    // 预加载相邻两张的高清，方向键切换更跟手（fire-and-forget，只为触发生成+缓存）
+    (function () {
+      const idx = currentVisibleIds.indexOf(id);
+      [idx - 1, idx + 1].forEach(j => {
+        if (j >= 0 && j < currentVisibleIds.length) {
+          try { window.pywebview.api.get_preview(currentVisibleIds[j]); } catch (e) {}
+        }
+      });
+    })();""",
+    "全屏blur-up换高清+预加载",
+)
+
 # ══════════ B. 无边框窗口外观 ══════════
 
 # B1. app-window 去圆角+阴影（现在它就是真窗口，圆角会露黑角）

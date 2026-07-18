@@ -525,6 +525,7 @@ svg { display: block; }
 }
 .fp-image.zoomed { cursor: grab; }
 .fp-image.zoomed.dragging { cursor: grabbing; transition: none; }
+.fp-image.fp-loading { filter: blur(8px); }
 
 .fp-hint {
   position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
@@ -1469,6 +1470,32 @@ svg { display: block; }
     fpPan = { x: 0, y: 0 };
     applyFpTransform();
     fpImage.style.backgroundImage = `url('${p.thumbnail || ''}')`;
+    // 先糊后清：缩略图(512)已铺上，去请求2560高清预览，加载完平滑换上、去模糊
+    fpImage.classList.add('fp-loading');
+    window.pywebview.api.get_preview(id).then(res => {
+      if (res && res.url && fpPhotoId === id) {
+        const hi = new Image();
+        hi.onload = () => {
+          if (fpPhotoId === id) {
+            fpImage.style.backgroundImage = `url('${res.url}')`;
+            fpImage.classList.remove('fp-loading');
+          }
+        };
+        hi.src = res.url;
+      } else if (fpPhotoId === id) {
+        // 当前这张确实没高清(原文件缺失)才去模糊；陈旧请求(fpPhotoId!==id)静默丢弃不动UI
+        fpImage.classList.remove('fp-loading');
+      }
+    });
+    // 预加载相邻两张的高清，方向键切换更跟手（fire-and-forget，只为触发生成+缓存）
+    (function () {
+      const idx = currentVisibleIds.indexOf(id);
+      [idx - 1, idx + 1].forEach(j => {
+        if (j >= 0 && j < currentVisibleIds.length) {
+          try { window.pywebview.api.get_preview(currentVisibleIds[j]); } catch (e) {}
+        }
+      });
+    })();
     el('#dp-fname').textContent = p.name;
     el('#dp-cam').textContent = p.cam;
     el('#dp-iso').textContent = p.iso;
