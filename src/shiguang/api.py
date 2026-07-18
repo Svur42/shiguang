@@ -14,7 +14,9 @@ from . import scanner
 # 现在改成"缩略图只写一次磁盘缓存文件、返回值只给一个 http 地址"，返回值体积从几十MB
 # 降到几十KB量级；图片本体由本地缩略图HTTP服务器（thumb_server）按需提供，界面通过
 # http://127.0.0.1:端口/{id}.jpg 加载（不能用 file:// 因为 WebView2 会拦截本地文件地址）。
-THUMB_CACHE_DIR = Path.home() / ".shiguang" / "thumb_cache"
+SHIGUANG_HOME = Path.home() / ".shiguang"
+THUMB_CACHE_DIR = SHIGUANG_HOME / "thumb_cache"
+PREVIEW_CACHE_DIR = SHIGUANG_HOME / "preview_cache"
 
 
 class Api:
@@ -32,7 +34,7 @@ class Api:
                 cache_file = THUMB_CACHE_DIR / f"{row['id']}.jpg"
                 if not cache_file.exists():
                     cache_file.write_bytes(row["thumbnail"])
-                thumbnail_url = f"{self.thumb_base_url}{row['id']}.jpg"
+                thumbnail_url = f"{self.thumb_base_url}thumb_cache/{row['id']}.jpg"
             day, time = exif_read._format_day_time(row["capture_time"])
             photos.append(
                 {

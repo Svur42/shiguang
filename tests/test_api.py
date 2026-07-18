@@ -34,7 +34,8 @@ def test_list_photos_returns_http_url_thumbnails(tmp_path, monkeypatch):
     assert photos[0]["filename"] == "a.jpg"
     # 返回的是本地缩略图HTTP服务器的地址，形如 http://127.0.0.1:端口/{id}.jpg
     # 不能是 file:// —— WebView2 会拦截本地文件地址导致图片显示为受损
-    assert photos[0]["thumbnail"] == f"{THUMB_BASE_URL}{photos[0]['id']}.jpg"
+    # 缩略图现在走 /thumb_cache/ 子路径（服务器根目录是 ~/.shiguang，下有 thumb_cache 和 preview_cache）
+    assert photos[0]["thumbnail"] == f"{THUMB_BASE_URL}thumb_cache/{photos[0]['id']}.jpg"
     # 缓存文件真的写到磁盘上了，且内容和数据库里的缩略图字节一致
     cache_file = cache_dir / f"{photos[0]['id']}.jpg"
     assert cache_file.exists()

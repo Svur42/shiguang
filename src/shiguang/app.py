@@ -3,7 +3,7 @@ from pathlib import Path
 import webview
 
 from . import db
-from .api import THUMB_CACHE_DIR, Api
+from .api import PREVIEW_CACHE_DIR, SHIGUANG_HOME, THUMB_CACHE_DIR, Api
 from .thumb_server import start_thumb_server
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -15,9 +15,11 @@ APP_ICON = _PROJECT_ROOT / "assets" / "shiguang.ico"
 
 def main():
     conn = db.connect(DB_PATH)
-    # 缩略图服务器要服务这个目录，必须先确保它存在
+    # 静态服务器服务 ~/.shiguang 根目录，下含 thumb_cache 与 preview_cache 两子目录，
+    # 必须先确保它们都存在
     THUMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    thumb_base_url = start_thumb_server(THUMB_CACHE_DIR)
+    PREVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    thumb_base_url = start_thumb_server(SHIGUANG_HOME)
     api = Api(conn, thumb_base_url)
     webview.create_window(
         "拾光 ShiGuang",
