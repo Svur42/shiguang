@@ -251,6 +251,14 @@ once(
     "app-window去圆角阴影",
 )
 
+# B1.5 去掉 app-window 尺寸上限（原型设计成"桌面里的一个卡片窗口"故限1600x1000，
+#      但现在它就是真窗口，最大化时若被卡在1600x1000居中，四周会露出body白底）
+once(
+    "  width: 100vw;\n  height: 100vh;\n  max-width: 1600px;\n  max-height: 1000px;",
+    "  width: 100vw;\n  height: 100vh;",
+    "去app-window尺寸上限",
+)
+
 # B2. body 深色背景 → --bg
 once(
     "body {\n  margin: 0;\n  background: var(--backdrop);",
