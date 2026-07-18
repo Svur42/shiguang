@@ -82,6 +82,18 @@ class Api:
         except Exception:
             return {"url": None, "error": traceback.format_exc()}
 
+    def open_external(self, photo_id):
+        """用系统默认程序打开这张照片的原文件（一键调外部修图/看图软件）。
+        原文件不可访问(卡拔了/移动了)则返回 opened=False，不报错。"""
+        try:
+            paths = db.get_paths_for_ids(self.conn, [photo_id])
+            if not paths or not os.path.exists(paths[0]):
+                return {"opened": False, "error": None}
+            os.startfile(paths[0])  # Windows: 用关联的默认程序打开
+            return {"opened": True, "error": None}
+        except Exception:
+            return {"opened": False, "error": traceback.format_exc()}
+
     def get_analysis(self, photo_id):
         """算详情面板真实数据：直方图(main/RGB)+过曝欠曝占比+高亮图URL。
         分析源优先2560预览缓存，没有则用导入时存的512缩略图BLOB；都没有则histograms=None。"""

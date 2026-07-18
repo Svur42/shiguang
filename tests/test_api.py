@@ -414,3 +414,35 @@ def test_get_analysis_handles_no_image(tmp_path, monkeypatch):
     assert res["error"] is None
     assert res["histograms"] is None
     assert res["overlay_url"] is None
+
+
+def test_open_external_calls_startfile_for_existing_file(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    real = tmp_path / "real.jpg"
+    real.write_bytes(b"x")
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path=str(real), folder=str(tmp_path), filename="real.jpg", thumbnail=b"t")
+    api = _make_api(conn)
+    pid = db.list_photos(conn)[0]["id"]
+
+    opened = []
+    monkeypatch.setattr("os.startfile", lambda p: opened.append(p), raising=False)
+
+    res = api.open_external(pid)
+
+    assert res["opened"] is True
+    assert res["error"] is None
+    assert opened == [str(real)]
+
+
+def test_open_external_returns_false_when_file_missing(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path="/gone/x.nef", folder="/gone", filename="x.nef", thumbnail=b"t")
+    api = _make_api(conn)
+    pid = db.list_photos(conn)[0]["id"]
+
+    res = api.open_external(pid)
+
+    assert res["opened"] is False
+    assert res["error"] is None

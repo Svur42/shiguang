@@ -356,6 +356,89 @@ once(
     "过曝开关切高亮图",
 )
 
+# A16. state 加 search/camera 两个筛选维度
+once(
+    "  const state = { filter: 'all', folder: 'all', view: 'time', selected: new Set() };",
+    "  const state = { filter: 'all', folder: 'all', view: 'time', selected: new Set(), search: '', camera: 'all' };",
+    "state加search/camera",
+)
+
+# A17. render 筛选加 搜索 + 机型 两个条件
+once(
+    """        : Array.isArray(state.folder) ? state.folder.includes(p.folder) : p.folder === state.folder;
+      return tierOk && folderOk;""",
+    """        : Array.isArray(state.folder) ? state.folder.includes(p.folder) : p.folder === state.folder;
+      const q = state.search.trim().toLowerCase();
+      const searchOk = !q || (p.filename && p.filename.toLowerCase().includes(q));
+      const cameraOk = state.camera === 'all' || p.cam === state.camera;
+      return tierOk && folderOk && searchOk && cameraOk;""",
+    "render加搜索+机型筛选",
+)
+
+# A18. 搜索框加 id
+once(
+    '          <input type="text" placeholder="搜索文件名、标签…" />',
+    '          <input type="text" id="search-input" placeholder="搜索文件名、标签…" />',
+    "搜索框加id",
+)
+
+# A19. 机型筛选按钮文字包 span（便于只更新文字不动图标）
+once(
+    "          筛选 · 全部机型\n",
+    '          <span id="filter-label">筛选 · 全部机型</span>\n',
+    "机型按钮文字包span",
+)
+
+# A20. 快捷键：全屏下 1/2/3/0 打分、e 外部打开
+once(
+    "    if (e.key === 'ArrowRight') { el('#fp-next').click(); return; }\n  });",
+    """    if (e.key === 'ArrowRight') { el('#fp-next').click(); return; }
+    // 快捷键打分：1废片 2可修 3精选 0待分析；e 用外部程序打开原文件
+    const kp = PHOTOS.find(x => x.id === fpPhotoId);
+    if (kp && ['1','2','3','0'].includes(e.key)) {
+      kp.tier = { '1': 'bad', '2': 'fix', '3': 'good', '0': null }[e.key];
+      window.pywebview.api.set_tier(kp.id, kp.tier);
+      document.querySelectorAll('#dp-tier-picker .tier-btn').forEach(b => b.classList.toggle('active', b.dataset.tier === kp.tier));
+      render();
+      showToast(kp.tier ? `已标记为「${TIER_LABEL[kp.tier]}」` : '已标记为「待分析」');
+      return;
+    }
+    if (kp && (e.key === 'e' || e.key === 'E')) {
+      window.pywebview.api.open_external(kp.id).then(r => {
+        if (r && !r.opened) showToast('原文件不可访问，无法打开（可能卡已拔出）');
+      });
+      return;
+    }
+  });""",
+    "快捷键打分+外部打开",
+)
+
+# A21. 搜索/机型筛选的事件监听（注入到 applyDensity 初始化之后）
+once(
+    "  applyDensity(localStorage.getItem('shiguang-density') || 'comfortable');",
+    """  applyDensity(localStorage.getItem('shiguang-density') || 'comfortable');
+
+  // 搜索：按文件名实时过滤
+  (function () {
+    const si = document.getElementById('search-input');
+    if (si) si.addEventListener('input', () => { state.search = si.value; render(); });
+  })();
+  // 按机型筛选：点击循环切换 全部机型→各机型→全部
+  (function () {
+    const bf = document.getElementById('btn-filter');
+    if (!bf) return;
+    bf.addEventListener('click', () => {
+      const cams = ['all', ...Array.from(new Set(PHOTOS.map(p => p.cam).filter(Boolean)))];
+      const i = cams.indexOf(state.camera);
+      state.camera = cams[(i + 1) % cams.length];
+      const label = document.getElementById('filter-label');
+      if (label) label.textContent = state.camera === 'all' ? '筛选 · 全部机型' : '筛选 · ' + state.camera;
+      render();
+    });
+  })();""",
+    "搜索+机型筛选监听",
+)
+
 # ══════════ B. 无边框窗口外观 ══════════
 
 # B1. app-window 去圆角+阴影（现在它就是真窗口，圆角会露黑角）

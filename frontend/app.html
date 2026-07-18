@@ -841,11 +841,11 @@ svg { display: block; }
       <div class="toolbar" data-od-id="toolbar">
         <div class="search-field">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.3-4.3"/></svg>
-          <input type="text" placeholder="搜索文件名、标签…" />
+          <input type="text" id="search-input" placeholder="搜索文件名、标签…" />
         </div>
         <button class="btn btn-sm" id="btn-filter">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
-          筛选 · 全部机型
+          <span id="filter-label">筛选 · 全部机型</span>
         </button>
         <div class="segmented" id="view-toggle" data-od-id="view-toggle">
           <button class="seg-item active" data-view="time">时间视图</button>
@@ -1084,7 +1084,7 @@ svg { display: block; }
   // Array.isArray(state.folder) check can't tell those two apart.
   let isCombinedView = false;
 
-  const state = { filter: 'all', folder: 'all', view: 'time', selected: new Set() };
+  const state = { filter: 'all', folder: 'all', view: 'time', selected: new Set(), search: '', camera: 'all' };
   // ids in the exact order the grid just rendered them — the fullscreen
   // preview's prev/next buttons walk this, so they always match what's
   // currently on screen (whatever filter/folder/view is active).
@@ -1191,7 +1191,10 @@ svg { display: block; }
       const folderOk = state.folder === 'all'
         ? true
         : Array.isArray(state.folder) ? state.folder.includes(p.folder) : p.folder === state.folder;
-      return tierOk && folderOk;
+      const q = state.search.trim().toLowerCase();
+      const searchOk = !q || (p.filename && p.filename.toLowerCase().includes(q));
+      const cameraOk = state.camera === 'all' || p.cam === state.camera;
+      return tierOk && folderOk && searchOk && cameraOk;
     });
     // the order photos actually land in the grid — captured here so the
     // fullscreen preview's prev/next buttons walk the same sequence the
@@ -1531,6 +1534,22 @@ svg { display: block; }
     // is a no-op, so this gets the boundary guard for free.
     if (e.key === 'ArrowLeft') { el('#fp-prev').click(); return; }
     if (e.key === 'ArrowRight') { el('#fp-next').click(); return; }
+    // 快捷键打分：1废片 2可修 3精选 0待分析；e 用外部程序打开原文件
+    const kp = PHOTOS.find(x => x.id === fpPhotoId);
+    if (kp && ['1','2','3','0'].includes(e.key)) {
+      kp.tier = { '1': 'bad', '2': 'fix', '3': 'good', '0': null }[e.key];
+      window.pywebview.api.set_tier(kp.id, kp.tier);
+      document.querySelectorAll('#dp-tier-picker .tier-btn').forEach(b => b.classList.toggle('active', b.dataset.tier === kp.tier));
+      render();
+      showToast(kp.tier ? `已标记为「${TIER_LABEL[kp.tier]}」` : '已标记为「待分析」');
+      return;
+    }
+    if (kp && (e.key === 'e' || e.key === 'E')) {
+      window.pywebview.api.open_external(kp.id).then(r => {
+        if (r && !r.opened) showToast('原文件不可访问，无法打开（可能卡已拔出）');
+      });
+      return;
+    }
   });
 
   // prev/next walk currentVisibleIds — the same order the grid just
@@ -1905,6 +1924,25 @@ svg { display: block; }
     if (btn) applyDensity(btn.dataset.density);
   });
   applyDensity(localStorage.getItem('shiguang-density') || 'comfortable');
+
+  // 搜索：按文件名实时过滤
+  (function () {
+    const si = document.getElementById('search-input');
+    if (si) si.addEventListener('input', () => { state.search = si.value; render(); });
+  })();
+  // 按机型筛选：点击循环切换 全部机型→各机型→全部
+  (function () {
+    const bf = document.getElementById('btn-filter');
+    if (!bf) return;
+    bf.addEventListener('click', () => {
+      const cams = ['all', ...Array.from(new Set(PHOTOS.map(p => p.cam).filter(Boolean)))];
+      const i = cams.indexOf(state.camera);
+      state.camera = cams[(i + 1) % cams.length];
+      const label = document.getElementById('filter-label');
+      if (label) label.textContent = state.camera === 'all' ? '筛选 · 全部机型' : '筛选 · ' + state.camera;
+      render();
+    });
+  })();
 
   // ── toast ───────────────────────────────────────────────────────
   let toastTimer;
