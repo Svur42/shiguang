@@ -217,6 +217,15 @@ once(
       await refreshFolders();
       render();
       renderFolderNav();
+      // 后台给存量照片补读EXIF拍摄时间（仅原文件可访问的会被补），补完刷新排序
+      window.pywebview.api.backfill_metadata().then(res => {
+        if (res && res.photos) {
+          PHOTOS.length = 0;
+          res.photos.forEach(p => PHOTOS.push(p));
+          render();
+          if (res.updated > 0) showToast(`已按拍摄时间整理 ${res.updated} 张照片`);
+        }
+      });
     } catch (e) {
       showToast('加载照片失败：' + e);
     }
