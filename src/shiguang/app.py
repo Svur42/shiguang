@@ -3,7 +3,7 @@ from pathlib import Path
 import webview
 
 from . import db
-from .api import PREVIEW_CACHE_DIR, SHIGUANG_HOME, THUMB_CACHE_DIR, Api
+from .api import EXPO_CACHE_DIR, PREVIEW_CACHE_DIR, SHIGUANG_HOME, THUMB_CACHE_DIR, Api
 from .thumb_server import start_thumb_server
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -19,6 +19,7 @@ def main():
     # 必须先确保它们都存在
     THUMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     PREVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    EXPO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     thumb_base_url = start_thumb_server(SHIGUANG_HOME)
     api = Api(conn, thumb_base_url)
     webview.create_window(

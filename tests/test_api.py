@@ -374,3 +374,43 @@ def test_get_preview_returns_none_when_original_missing(tmp_path, monkeypatch):
 
     assert result["url"] is None
     assert result["error"] is None
+
+
+import shiguang.image_analysis as image_analysis
+
+
+def test_get_analysis_returns_histograms_and_clipping(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    monkeypatch.setattr(api_module, "PREVIEW_CACHE_DIR", tmp_path / "preview_cache")
+    monkeypatch.setattr(api_module, "EXPO_CACHE_DIR", tmp_path / "expo_cache")
+    from PIL import Image
+    import io
+    buf = io.BytesIO(); Image.new("RGB", (100, 100), (128, 128, 128)).save(buf, format="JPEG")
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path="/gone/x.jpg", folder="/gone", filename="x.jpg", thumbnail=buf.getvalue())
+    api = _make_api(conn)
+    pid = db.list_photos(conn)[0]["id"]
+
+    res = api.get_analysis(pid)
+
+    assert res["error"] is None
+    assert len(res["histograms"]["main"]) == 64
+    assert "over_pct" in res and "under_pct" in res
+    assert res["overlay_url"] == f"{THUMB_BASE_URL}expo_cache/{pid}.jpg"
+    assert (tmp_path / "expo_cache" / f"{pid}.jpg").exists()
+
+
+def test_get_analysis_handles_no_image(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    monkeypatch.setattr(api_module, "PREVIEW_CACHE_DIR", tmp_path / "preview_cache")
+    monkeypatch.setattr(api_module, "EXPO_CACHE_DIR", tmp_path / "expo_cache")
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path="/gone/x.nef", folder="/gone", filename="x.nef", thumbnail=None)
+    api = _make_api(conn)
+    pid = db.list_photos(conn)[0]["id"]
+
+    res = api.get_analysis(pid)
+
+    assert res["error"] is None
+    assert res["histograms"] is None
+    assert res["overlay_url"] is None

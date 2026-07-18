@@ -7,6 +7,7 @@ from send2trash import send2trash
 
 from . import db
 from . import exif_read
+from . import image_analysis
 from . import raw_thumb
 from . import scanner
 
@@ -18,6 +19,7 @@ from . import scanner
 SHIGUANG_HOME = Path.home() / ".shiguang"
 THUMB_CACHE_DIR = SHIGUANG_HOME / "thumb_cache"
 PREVIEW_CACHE_DIR = SHIGUANG_HOME / "preview_cache"
+EXPO_CACHE_DIR = SHIGUANG_HOME / "expo_cache"
 
 
 class Api:
@@ -79,6 +81,41 @@ class Api:
             return {"url": f"{self.thumb_base_url}preview_cache/{photo_id}.jpg", "error": None}
         except Exception:
             return {"url": None, "error": traceback.format_exc()}
+
+    def get_analysis(self, photo_id):
+        """算详情面板真实数据：直方图(main/RGB)+过曝欠曝占比+高亮图URL。
+        分析源优先2560预览缓存，没有则用导入时存的512缩略图BLOB；都没有则histograms=None。"""
+        try:
+            EXPO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            image_bytes = None
+            preview_file = PREVIEW_CACHE_DIR / f"{photo_id}.jpg"
+            if preview_file.exists():
+                image_bytes = preview_file.read_bytes()
+            if image_bytes is None:
+                cur = self.conn.execute("SELECT thumbnail FROM photos WHERE id = ?", (photo_id,))
+                row = cur.fetchone()
+                if row and row["thumbnail"]:
+                    image_bytes = row["thumbnail"]
+            if image_bytes is None:
+                return {"histograms": None, "over_pct": None, "under_pct": None,
+                        "overlay_url": None, "error": None}
+
+            hists = image_analysis.histograms(image_bytes)
+            clip = image_analysis.clipping(image_bytes)
+            overlay_file = EXPO_CACHE_DIR / f"{photo_id}.jpg"
+            if not overlay_file.exists():
+                overlay_file.write_bytes(image_analysis.make_overlay(image_bytes))
+
+            return {
+                "histograms": hists,
+                "over_pct": clip["over_pct"],
+                "under_pct": clip["under_pct"],
+                "overlay_url": f"{self.thumb_base_url}expo_cache/{photo_id}.jpg",
+                "error": None,
+            }
+        except Exception:
+            return {"histograms": None, "over_pct": None, "under_pct": None,
+                    "overlay_url": None, "error": traceback.format_exc()}
 
     # ── 窗口控制（无边框窗口下由前端标题栏按钮调用）──────────────
     def minimize_window(self):
