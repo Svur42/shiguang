@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>检测到存储卡</title>
+<style>
+  :root {
+    --bg: #f5f5f7; --surface: #fff; --fg: #1d1d1f; --muted: #6e6e73;
+    --border: #e2e2e6; --accent: #0071e3; --accent-on: #fff; --danger: #ff3b30;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--fg); display: flex; flex-direction: column;
+    height: 100vh; user-select: none;
+  }
+  .titlebar {
+    height: 34px; flex: 0 0 auto; display: flex; align-items: center; padding: 0 12px;
+    border-bottom: 1px solid var(--border); background: var(--surface);
+  }
+  .titlebar .t { font-size: 12.5px; color: var(--muted); }
+  .body { flex: 1 1 auto; overflow: auto; padding: 18px 20px; }
+  h2 { font-size: 17px; margin: 4px 0 6px; }
+  .sub { font-size: 12.5px; color: var(--muted); line-height: 1.6; margin: 0 0 14px; }
+  .list { display: flex; flex-direction: column; gap: 6px; }
+  .item {
+    display: flex; align-items: center; gap: 10px; padding: 9px 11px;
+    border: 1px solid var(--border); border-radius: 10px; background: var(--surface); cursor: pointer;
+  }
+  .item input { width: 16px; height: 16px; accent-color: var(--accent); }
+  .item .name { flex: 1 1 auto; font-size: 13.5px; overflow: hidden; }
+  .item .path { display: block; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item .meta { font-size: 12px; color: var(--muted); flex: 0 0 auto; }
+  .stat { margin: 14px 0 4px; font-size: 12.5px; color: var(--muted); }
+  .actions {
+    flex: 0 0 auto; display: flex; justify-content: flex-end; gap: 10px;
+    padding: 12px 20px; border-top: 1px solid var(--border); background: var(--surface);
+  }
+  .btn {
+    -webkit-app-region: no-drag; border: 1px solid var(--border); background: var(--surface);
+    color: var(--fg); border-radius: 9px; padding: 8px 16px; font-size: 13px; cursor: pointer;
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-on); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .empty { color: var(--muted); font-size: 13px; padding: 30px 0; text-align: center; }
+</style>
+</head>
+<body>
+  <div class="titlebar pywebview-drag-region"><span class="t">拾光 · 检测到存储卡</span></div>
+  <div class="body">
+    <h2>检测到存储卡</h2>
+    <p class="sub">勾选要导入的文件夹，确认后会记忆在侧边栏方便切换。导入后不会自动分析，需在主界面点「开始分析」。</p>
+    <div class="list" id="list"><div class="empty">正在读取存储卡…</div></div>
+    <div class="stat" id="stat"></div>
+  </div>
+  <div class="actions">
+    <button class="btn" id="cancel">取消</button>
+    <button class="btn primary" id="confirm">确认导入</button>
+  </div>
+<script>
+  const $ = (s) => document.querySelector(s);
+  function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+  let folders = [];
+
+  function render() {
+    const list = $('#list');
+    if (!folders.length) { list.innerHTML = '<div class="empty">这张卡里没有找到照片。</div>'; $('#stat').textContent=''; refreshStat(); return; }
+    list.innerHTML = folders.map((f, i) => `
+      <label class="item">
+        <input type="checkbox" checked data-i="${i}" />
+        <span class="name">${esc(f.name)}<span class="path">${esc(f.path)}</span></span>
+        <span class="meta">${f.count} 张</span>
+      </label>`).join('');
+    list.querySelectorAll('input').forEach(cb => cb.addEventListener('change', refreshStat));
+    refreshStat();
+  }
+  function refreshStat() {
+    const checked = Array.from($('#list').querySelectorAll('input:checked'));
+    const n = checked.reduce((s, cb) => s + (folders[Number(cb.dataset.i)].count || 0), 0);
+    $('#stat').textContent = checked.length ? `共 ${n} 张照片 · ${checked.length} 个文件夹` : '未勾选任何文件夹';
+    $('#confirm').disabled = checked.length === 0;
+  }
+
+  // 后端每次检测到卡就调这个把数据推进来（窗口常驻隐藏、复用）。
+  // mode="known": 这张卡全认识(没有新文件夹要确认)，仅在主窗当前隐藏(缩托盘/最小化)时
+  // 才会弹出——只是告知"已识别、已自动刷新"，不需要用户做任何选择，复用取消按钮当"好的"。
+  window.renderCard = function (card) {
+    if (card && card.mode === 'known') {
+      $('#confirm').style.display = 'none';
+      $('#cancel').textContent = '好的';
+      $('#stat').textContent = '';
+      $('#list').innerHTML = `<div class="empty">已识别这张存储卡，${esc(String(card.known_count || 0))} 个文件夹已导入过，已自动刷新到侧边栏。</div>`;
+      return;
+    }
+    $('#confirm').style.display = '';
+    $('#cancel').textContent = '取消';
+    folders = (card && card.folders) || [];
+    render();
+  };
+
+  // 后端导入过程中逐张推进度，显示"已导入 X/共 Y 张（百分比）"
+  window.onImportProgress = function (done, total) {
+    const pct = total > 0 ? Math.round(done / total * 100) : 0;
+    $('#stat').textContent = `正在导入照片… ${done}/${total} 张（${pct}%），别关窗`;
+  };
+
+  async function loadPending() {
+    try {
+      const card = await window.pywebview.api.get_pending_card();
+      window.renderCard(card);
+    } catch (e) {
+      $('#list').innerHTML = '<div class="empty">读取失败，请重试。</div>';
+    }
+  }
+
+  $('#cancel').addEventListener('click', () => {
+    try { window.pywebview.api.cancel_import(); } catch (e) {}
+  });
+  $('#confirm').addEventListener('click', async () => {
+    const paths = Array.from($('#list').querySelectorAll('input:checked')).map(cb => folders[Number(cb.dataset.i)].path);
+    if (!paths.length) return;
+    $('#confirm').disabled = true; $('#confirm').textContent = '正在导入…';
+    $('#stat').textContent = '正在导入照片，请稍候…（大量 RAW 可能需要一两分钟，别关窗）';
+    try {
+      await window.pywebview.api.import_and_finish(paths);
+    } catch (e) {}
+    finally {
+      $('#confirm').disabled = false;      // 复位，避免窗口复用时按钮卡在灰态
+      $('#confirm').textContent = '确认导入';
+    }
+  });
+
+  window.addEventListener('pywebviewready', loadPending);
+  if (window.pywebview && window.pywebview.api) loadPending();
+</script>
+</body>
+</html>

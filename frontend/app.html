@@ -219,6 +219,56 @@ svg { display: block; }
 .folder-row { cursor: pointer; }
 .folder-check { width: 14px; height: 14px; accent-color: var(--accent); flex: 0 0 auto; margin: 0; }
 .folder-row-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ─── swipe-to-delete a folder — same press-and-drag language as the
+ * segmented sliders: only tracks the pointer while actually held down,
+ * and only commits past a threshold, springing back (with a bit of
+ * jelly-like overshoot) otherwise.
+ *
+ * The red isn't a full-bleed layer that the row slides off of — its
+ * width is bound to the same --swipe-x custom property that drives the
+ * row's own transform, so the red patch only ever exists exactly as
+ * wide as the row has actually been dragged. Two things fall out of
+ * that for free: (1) when the release bounce overshoots past 0 (the
+ * jelly wobble), --swipe-x goes positive and the clamped width collapses
+ * to 0 — nothing red to show on the left, because there's no red past
+ * where the drag actually reached; (2) no more relying on an ancestor's
+ * overflow:hidden to carve a rounded corner out of a full rectangle —
+ * that clip and the row's own border-radius are two independently
+ * anti-aliased arcs that don't quite line up at fractional device
+ * pixels, which is what left the hairline red slivers in the corners
+ * even at rest. Both layers now just draw the same --radius-sm shape
+ * directly, over the exact same box, so there's nothing to misalign. */
+.folder-swipe { position: relative; background: var(--surface); border-radius: var(--radius-sm); }
+/* a bare rectangle, no padding/content of its own — padding-right would
+ * have set a floor under how far the width can shrink (padding still
+ * needs room even at width:0, box-sizing or not), which is exactly what
+ * was leaving a constant sliver of red at rest. The icon lives in its
+ * own layer at a fixed offset instead, so this can genuinely reach 0. */
+.folder-swipe-action {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  width: max(0px, calc(-1 * var(--swipe-x, 0px)));
+  border-radius: var(--radius-sm);
+  background: var(--danger);
+  transition: width 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.folder-swipe.dragging .folder-swipe-action { transition: none; }
+.folder-swipe-icon {
+  position: absolute; top: 0; bottom: 0; right: var(--space-3);
+  display: flex; align-items: center;
+  color: var(--accent-on);
+  pointer-events: none;
+}
+.folder-swipe-icon svg { width: 16px; height: 16px; }
+.folder-swipe .folder-row {
+  position: relative;
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  transform: translateX(var(--swipe-x, 0px));
+  transition: transform 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.folder-swipe.dragging .folder-row { transition: none; }
+.folder-swipe.dragging .folder-row { transition: none; }
 /* the "start analysis" action is the one lifecycle step users must take
  * by hand — it gets accent styling like a primary button while pending
  * photos exist, and goes quiet once there's nothing left to analyze. */
@@ -250,12 +300,22 @@ svg { display: block; }
 .toolbar {
   flex: 0 0 auto;
   display: flex;
+  flex-wrap: wrap;            /* 窗口变窄时按钮换行，保证全部可见，不被挤出屏幕 */
+  row-gap: 8px;
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border);
   background: color-mix(in oklab, var(--bg) 92%, transparent);
   backdrop-filter: blur(12px);
+  /* backdrop-filter alone creates a new stacking context for this whole
+   * bar; without an explicit position+z-index here, that context still
+   * paints in plain DOM order against .content — which comes right after
+   * it — so the photo grid was covering any z-index inside the toolbar
+   * (e.g. the split-button dropdown) no matter how high that inner
+   * z-index was set. */
+  position: relative;
+  z-index: 2;
 }
 .search-field {
   display: flex;
@@ -290,10 +350,16 @@ svg { display: block; }
   font-size: var(--text-sm);
   font-weight: 500;
   white-space: nowrap;
-  transition: background var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard), opacity var(--motion-fast);
+  /* transform gets the bouncy easing so a press-release springs back up;
+   * :active below swaps in a quick linear one just for the down-stroke. */
+  transition: background var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard), opacity var(--motion-fast), box-shadow var(--motion-fast) var(--ease-standard), transform 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.btn:hover { border-color: var(--meta); }
-.btn:active { transform: translateY(1px); }
+/* same lift-and-outline affordance as hovering a photo card, so every
+ * clickable toolbar control reads the same way. outline (not border)
+ * so the stroke doesn't nudge layout or get clipped by a parent's
+ * overflow:hidden. */
+.btn:hover { outline: 1px solid var(--fg); outline-offset: -1px; box-shadow: var(--elev-raised); }
+.btn:active { transform: translateY(1px) scale(0.97); box-shadow: none; transition: transform 90ms var(--ease-standard); }
 .btn:focus-visible { box-shadow: var(--focus-ring); outline: none; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-on); }
 .btn-primary:hover { background: var(--accent-hover); }
@@ -306,24 +372,163 @@ svg { display: block; }
 .btn.icon-only { padding: 7px; }
 
 .segmented {
+  position: relative;
   display: flex;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 2px;
+  /* carved-in groove the sliding thumb lives inside — this recess is
+   * permanent; only the thumb's position within it changes. */
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.16);
+}
+/* thumb is the one "flush" surface — it sits level with the track's
+ * outer edge wherever the active item is. It only follows the pointer
+ * while the mouse is actually held down (see JS); a plain hover leaves
+ * it alone. The glide uses a springy easing, closer to the liquid-glass
+ * feel than a plain linear slide, and is deliberately unhurried. */
+.seg-thumb {
+  position: absolute; top: 2px; bottom: 2px; left: 2px;
+  border-radius: 6px;
+  background: var(--bg);
+  box-shadow: var(--elev-raised), var(--elev-ring);
+  pointer-events: none;
+  z-index: 0;
+  transition: transform 420ms cubic-bezier(0.34, 1.56, 0.64, 1), width 420ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .seg-item {
+  position: relative; z-index: 1;
   border: none; background: transparent; color: var(--muted);
   font-size: var(--text-xs); font-weight: 500;
   padding: 5px 12px; border-radius: 6px;
-  transition: background var(--motion-fast), color var(--motion-fast);
+  transition: color var(--motion-fast);
+  cursor: pointer;
 }
-.seg-item.active { background: var(--bg); color: var(--fg); box-shadow: var(--elev-ring); }
+/* text color is driven by "lit" (wherever the thumb currently sits),
+ * not "active" (the committed selection) — they normally match, but
+ * during a drag the thumb (and therefore the dark text) can visit
+ * items that aren't selected yet, so the darkened label always tracks
+ * what's actually under the thumb in real time. */
+.seg-item.lit { color: var(--fg); }
+
+/* ─── split button ─────────────────────────────────────────────────
+ * Two separate pills, not one joined control: the left pill is the
+ * instant "do it now" action, the right pill is the persistent setting
+ * (which tier it acts on) plus its own dropdown caret. Keeping them
+ * visually apart — a real gap, distinct pill shapes — is what makes it
+ * obvious at a glance that the caret only ever edits the word next to
+ * it, never triggers the action itself — but they still read as one
+ * button overall: no gap between them, one shared outer frame, just a
+ * thin internal divider marking where "do it" ends and "which tier"
+ * begins. */
+.split-btn {
+  position: relative; display: inline-flex; align-items: stretch;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  transition: outline-color var(--motion-fast) var(--ease-standard), box-shadow var(--motion-fast) var(--ease-standard), transform 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+/* the outline lives on the whole pill, not each half — hovering either
+ * side lights up the same one outline, because conceptually it's a
+ * single button that happens to have two click targets. */
+.split-btn:hover { outline: 1px solid var(--fg); outline-offset: -1px; box-shadow: var(--elev-raised); }
+/* rounded outer corners come from each half's own border-radius, not
+ * from clipping the container — an overflow:hidden container was
+ * clipping the dropdown menu below it too, since that menu is an
+ * absolutely-positioned child of this same element. */
+.split-btn-action { border: none; border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.split-btn-tier { border: none; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.split-btn-action:hover, .split-btn-tier:hover { outline: none; box-shadow: none; }
+.split-btn-action { border-right: 1px solid var(--border); }
+/* pressing either half should depress the whole pill together, since
+ * it reads as one button — so the individual .btn:active press on each
+ * half is cancelled and replaced with one press on the shared frame. */
+.split-btn-action:active, .split-btn-tier:active { transform: none; box-shadow: none; }
+.split-btn:has(.split-btn-action:active, .split-btn-tier:active) {
+  transform: translateY(1px) scale(0.97);
+  transition: transform 90ms var(--ease-standard);
+}
+.split-btn-tier {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 7px 12px 7px 10px;
+  background: var(--surface); color: var(--muted);
+  font-size: var(--text-xs); font-weight: 500;
+  transition: background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
+}
+.split-btn-tier:hover { color: var(--fg); }
+.split-btn-tier svg { width: 11px; height: 11px; margin-left: -2px; transition: transform var(--motion-fast) var(--ease-standard); }
+.split-btn-tier.open svg { transform: rotate(180deg); }
+.split-btn-menu {
+  position: absolute; top: calc(100% + 6px); right: 0;
+  min-width: 148px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md);
+  box-shadow: var(--elev-raised);
+  padding: 6px;
+  display: none;
+  z-index: 30;
+}
+.split-btn-menu.open { display: block; }
+.split-btn-menu-item {
+  display: flex; align-items: center; width: 100%; text-align: left;
+  padding: 7px 10px; border-radius: 6px; border: none; background: transparent;
+  font-size: var(--text-sm); color: var(--fg); cursor: pointer;
+}
+.split-btn-menu-item:hover { background: var(--bg); }
+.split-btn-menu-item.selected { color: var(--accent); font-weight: 600; }
+.split-btn-menu-item.selected::after { content: '✓'; margin-left: auto; }
+
+/* Flipping data-theme swaps every color token instantly, which reads as
+ * a harsh flash across the whole window. This class is added right
+ * before the swap and removed ~380ms later (see applyTheme in the
+ * script), giving every element a brief, temporary color/background
+ * transition so the whole UI cross-fades between light and dark instead
+ * of hard-cutting. !important is deliberate: it needs to override each
+ * component's own (differently-timed) transition for this one moment,
+ * without permanently changing how those components normally animate. */
+html.theme-transitioning,
+html.theme-transitioning *,
+html.theme-transitioning *::before,
+html.theme-transitioning *::after {
+  transition: background-color 380ms ease, color 380ms ease, border-color 380ms ease, box-shadow 380ms ease, fill 380ms ease, stroke 380ms ease !important;
+}
+/* 深浅切换柔和化：照片网格(可能上千张缩略图)不参与颜色过渡，避免上千元素同时重绘卡顿 */
+html.theme-transitioning #content,
+html.theme-transitioning #content * {
+  transition: none !important;
+}
+
+/* ─── theme dip (not a slider — one dish that's either sunken or flush) ──
+ * Default (light) rests below the surrounding surface, like a pressed-in
+ * dent. Clicking it eases it back up to level with the surface — that
+ * rise (not a left/right thumb move) is what represents the dark/light
+ * switch. */
+.theme-dip {
+  width: 32px; height: 32px; border-radius: 50%;
+  border: none; padding: 0; flex: none;
+  background: var(--surface); color: var(--fg);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.3), inset 0 0 0 1px var(--border);
+  transform: translateY(1px);
+  transition: box-shadow 420ms var(--ease-emphasized), transform 420ms var(--ease-emphasized);
+}
+.theme-dip.raised {
+  box-shadow: var(--elev-raised), var(--elev-ring);
+  transform: translateY(0);
+}
+.theme-dip svg { width: 15px; height: 15px; }
 
 .toolbar-spacer { flex: 1 1 auto; }
 
 /* ─── gallery content ──────────────────────────────────────────── */
 .content { flex: 1 1 auto; overflow-y: auto; padding: var(--space-5) var(--space-6) var(--space-8); }
+/* overflow-y: auto above forces overflow-x to also compute as 'auto'
+ * (clipping) per spec, even though only -x was ever meant to stay
+ * visible — a first-column stack card's leftward-peeking layers were
+ * getting silently clipped at this edge because the default 24px
+ * padding-left is narrower than the peek distance, which is why more
+ * than one layer never actually became visible. Extra left padding
+ * only while stack mode is on gives the peek room without changing
+ * the flat-view layout at all. */
+.content.stack-mode-on { padding-left: 16px; }
 .group-header {
   display: flex; align-items: baseline; gap: var(--space-3);
   margin: var(--space-6) 0 var(--space-3);
@@ -337,6 +542,7 @@ svg { display: block; }
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
   gap: var(--space-4);
+  align-items: start;   /* 展开条撑高不再连累同行其它卡(下框被拉长)——各卡保持自然高度顶对齐 */
 }
 /* density is one dial, not two — column width is the only thing that
  * changes; row count is just whatever fits given the aspect-ratio'd
@@ -411,6 +617,126 @@ svg { display: block; }
 .photo-meta { padding: 6px 8px 8px; }
 .photo-meta .fname { font-size: 11px; color: var(--fg-2); font-family: var(--font-mono); }
 .photo-meta .ftime { font-size: 10px; color: var(--meta); margin-top: 1px; }
+
+/* ─── burst/similar stack card — collapses a near-duplicate group down
+ * to one tile in the grid. The outer .stack-card is unclipped so the
+ * peeking layers behind it can show past its own edges; the actual
+ * clickable thumbnail reuses .photo-card as-is (same hover lift, tier
+ * border, radius) so it never has to be restyled by hand.
+ *
+ * The number of peeking layers scales with how many photos are actually
+ * in the stack (see stackLayerCount in the script) — real DOM elements
+ * rather than ::before/::after since a pseudo-element pair caps out at
+ * two layers and larger stacks need up to four. Every layer fans out
+ * further in the SAME rotational direction as depth increases (like a
+ * hand of playing cards), not alternating sides — alternating made each
+ * extra layer cancel most of the previous one's peek instead of adding
+ * to it, which is why more than 2 layers used to be nearly invisible.
+ * Hovering fans them out a little further before any click — a small
+ * "about to open" preview — and the bigger reveal on the actual click is
+ * a separate per-card fan-out animation (see dealStackMembers). */
+/* isolation: isolate is load-bearing, not decorative — position:relative
+ * alone does NOT give .stack-card its own stacking context, so the
+ * negative z-index on .stack-layer (below) would otherwise escape it
+ * and get compared against sibling grid cards instead, painting behind
+ * whatever grid item happens to sit earlier in the DOM. Isolating keeps
+ * the layer stack entirely local to its own card. */
+.stack-card { position: relative; cursor: pointer; isolation: isolate; }
+.stack-layer {
+  position: absolute; inset: 0;
+  background: var(--surface);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-md);
+  pointer-events: none;
+  transform-origin: 90% 90%;
+  transition: transform 280ms var(--ease-standard);
+}
+.stack-layer[data-depth="1"] { z-index: 0;  transform: rotate(-1.5deg) translate(-2px, -2px); }
+.stack-layer[data-depth="2"] { z-index: -1; transform: rotate(-3deg) translate(-3px, -3.5px); }
+.stack-layer[data-depth="3"] { z-index: -2; transform: rotate(-4deg) translate(-4px, -5px); }
+.stack-layer[data-depth="4"] { z-index: -3; transform: rotate(-5deg) translate(-5px, -6.5px); }
+.stack-card:hover .stack-layer[data-depth="1"] { transform: rotate(-2deg) translate(-3px, -3px); }
+.stack-card:hover .stack-layer[data-depth="2"] { transform: rotate(-3.5deg) translate(-4px, -5px); }
+.stack-card:hover .stack-layer[data-depth="3"] { transform: rotate(-5deg) translate(-5px, -7px); }
+.stack-card:hover .stack-layer[data-depth="4"] { transform: rotate(-6deg) translate(-6px, -8px); }
+.stack-card .stack-card-thumb { position: relative; z-index: 1; }
+.stack-card:hover .stack-card-thumb { box-shadow: var(--elev-raised); transform: translateY(-1px); }
+.stack-cell .photo-thumb { box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--accent), transparent 80%); }
+.stack-cell.is-keep .photo-thumb { box-shadow: inset 0 0 0 2px var(--accent); }
+.stack-cell .stack-badges { position: absolute; top: 8px; right: 8px; z-index: 2; }
+.stack-cell .stack-keep-star { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); z-index: 3; color: #ffd54a; font-size: 12px; line-height: 1; background: rgba(0,0,0,.6); padding: 3px 8px; border-radius: var(--radius-pill); border: none; cursor: pointer; }
+.stack-cell .stack-keep-star:hover { background: rgba(0,0,0,.8); color: #ffe082; }
+.stack-cell-del { position: absolute; bottom: 8px; right: 8px; z-index: 3; width: 24px; height: 24px; border-radius: 50%; background: rgba(0,0,0,.5); color: #fff; border: none; cursor: pointer; display: grid; place-items: center; font-size: 12px; opacity: 0; transition: opacity .12s; }
+.stack-cell:hover .stack-cell-del { opacity: 1; }
+.stack-cell-del:hover { background: var(--danger); }
+.stack-count-badge {
+  position: absolute; top: 8px; left: 8px;
+  background: rgba(0,0,0,0.6);
+  color: var(--accent-on);
+  font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+  padding: 3px 8px; border-radius: var(--radius-pill);
+  backdrop-filter: blur(4px);
+}
+.stack-badges { position: absolute; top: 8px; right: 8px; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+.stack-badge-burst, .stack-badge-similar {
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%;
+  font-size: 12px; line-height: 1;
+  color: var(--accent-on);
+  backdrop-filter: blur(4px);
+}
+.stack-badge-burst { background: color-mix(in oklab, var(--warn), transparent 8%); }
+.stack-badge-similar { background: color-mix(in oklab, var(--accent), transparent 10%); }
+
+/* ─── expanded state — inline in the grid (not a floating overlay) so
+ * it's unambiguous which stack these belong to. Its grid-column span is
+ * set per-instance in JS (applyStackExpandSpans) to roughly the number
+ * of member photos, clamped to however many columns the grid actually
+ * has — a 2-photo stack shouldn't force a full-width strip when 3-4
+ * columns of empty space would otherwise sit next to it. */
+.stack-expand {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: var(--space-4);
+  margin-bottom: 0;
+}
+.stack-expand-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-3); }
+.stack-expand-title { font-size: var(--text-sm); color: var(--fg-2); display: flex; align-items: center; gap: 8px; }
+.stack-expand-title .stack-badge-burst, .stack-expand-title .stack-badge-similar { position: static; width: 20px; height: 20px; }
+.stack-expand-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--space-3);
+}
+.stack-member { position: relative; border-radius: var(--radius-md); overflow: hidden; background: var(--bg); border: 2px solid var(--border); }
+.stack-member.is-keep { border-color: var(--accent); }
+.stack-member.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
+.stack-keep-star {
+  position: absolute; top: 8px; left: 8px;
+  color: var(--accent-on);
+  background: var(--accent);
+  width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px;
+}
+.stack-member-actions { display: flex; gap: 6px; padding: 6px; background: var(--surface); }
+.stack-keep, .stack-delete {
+  flex: 1 1 0; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--fg); font-size: 11px; font-weight: 500;
+  padding: 5px 6px; cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
+}
+.stack-keep:hover { border-color: var(--meta); }
+.stack-keep.active { background: color-mix(in oklab, var(--accent), transparent 88%); border-color: var(--accent); color: var(--accent-active); font-weight: 600; }
+.stack-delete { color: var(--danger); }
+.stack-delete:hover { background: color-mix(in oklab, var(--danger), transparent 92%); border-color: var(--danger); }
+
+/* toolbar toggle — same look as every other toolbar .btn; only the
+ * disabled/empty state needs its own note (there's nothing to fold). */
+#toolbar-stack-toggle { box-shadow: inset 0 2px 5px rgba(0,0,0,0.28), inset 0 0 0 1px var(--border); transform: translateY(1px); transition: box-shadow 420ms var(--ease-emphasized), transform 420ms var(--ease-emphasized); }
+#toolbar-stack-toggle.active:not(:disabled) { box-shadow: var(--elev-raised), var(--elev-ring); transform: translateY(0); background: color-mix(in oklab, var(--accent), transparent 88%); border-color: var(--accent); color: var(--accent-active); }
+#toolbar-stack-toggle:disabled { opacity: 0.45; cursor: default; }
 
 /* ─── import modal ─────────────────────────────────────────────── */
 .modal-backdrop {
@@ -556,6 +882,8 @@ svg { display: block; }
 .fp-icon-btn:hover { background: rgba(0,0,0,0.6); }
 .fp-icon-btn:disabled { opacity: 0.25; pointer-events: none; }
 .fp-close { right: 16px; }
+#fp-delete { background: var(--danger); border-color: rgba(255,255,255,0.4); color: #fff; }
+#fp-delete:hover { background: var(--danger); filter: brightness(1.12); }
 .fp-toggle-info { right: 64px; }
 .fp-toggle-info.active { background: var(--accent); border-color: var(--accent); }
 
@@ -863,14 +1191,30 @@ svg { display: block; }
           <button class="seg-item active" data-density="comfortable">标准</button>
           <button class="seg-item" data-density="large">大图</button>
         </div>
+        <button class="btn btn-sm" id="toolbar-stack-toggle" data-od-id="toolbar-stack-toggle" title="把连拍/相似的照片折叠成一堆">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="3" width="14" height="14" rx="2"/><path d="M3 8v11a2 2 0 0 0 2 2h11"/></svg>
+          折叠
+        </button>
         <div class="toolbar-spacer"></div>
-        <button class="btn btn-sm" id="btn-select-bad">一键全选废片</button>
+        <div class="split-btn" id="select-all-split" data-od-id="select-all-split">
+          <button class="btn btn-sm split-btn-action" id="btn-select-bad">一键全选</button>
+          <button class="btn btn-sm split-btn-tier" id="btn-select-all-caret" type="button" aria-haspopup="true" aria-label="选择全选的档位">
+            <span id="select-all-tier-label">废片</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="split-btn-menu" id="select-all-menu">
+            <button class="split-btn-menu-item" data-tier="bad">废片</button>
+            <button class="split-btn-menu-item" data-tier="fix">可修</button>
+            <button class="split-btn-menu-item" data-tier="good">精选</button>
+          </div>
+        </div>
+        <button class="btn btn-sm" id="btn-clear-sel" style="display:none;">取消选择（<span id="clear-sel-count">0</span>）</button>
         <button class="btn btn-sm" id="btn-compare">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="7" height="14" rx="1"/><rect x="14" y="5" width="7" height="14" rx="1"/></svg>
           对比模式
         </button>
         <button class="btn btn-danger btn-sm" id="btn-delete" disabled>删除已选（<span id="sel-count">0</span>）</button>
-        <button class="btn btn-sm icon-only" id="btn-theme" aria-label="切换深色/浅色">
+        <button class="theme-dip" id="btn-theme" aria-pressed="false" aria-label="切换深色/浅色">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" id="theme-icon"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
         </button>
       </div>
@@ -944,11 +1288,20 @@ svg { display: block; }
       <button class="fp-icon-btn fp-nav-btn fp-nav-next" id="fp-next" aria-label="下一张">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
       </button>
+      <button class="fp-icon-btn" id="fp-rotate-ccw" aria-label="逆时针旋转90°" style="top:auto; bottom:16px; left:16px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v4h4"/></svg>
+      </button>
+      <button class="fp-icon-btn" id="fp-rotate-cw" aria-label="顺时针旋转90°" style="top:auto; bottom:16px; right:16px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v4h-4"/></svg>
+      </button>
       <span class="fp-hint" id="fp-hint">滚轮缩放放大 · 可拖动查看</span>
     </div>
 
     <button class="fp-icon-btn fp-toggle-info active" id="fp-toggle-info" aria-label="详情">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8.3v.01M12 11v5.2" stroke-linecap="round"/></svg>
+    </button>
+    <button class="fp-icon-btn" id="fp-delete" aria-label="删除这张" style="right:108px;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2m-9 0 1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/></svg>
     </button>
     <button class="fp-icon-btn fp-close" id="fp-close" aria-label="关闭">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -1054,6 +1407,26 @@ svg { display: block; }
     {id:20, file:'photo-88.jpg',  day:'6月10日', folder:'102CANON', time:'12:22:58', tier: null, autoTier: 'bad',  burst:null, iso:12800, shutter:'1/25s',  aperture:'f/1.4', focal:'50mm',  cam:'Canon EOS R5', size:'44.9MB', name:'DSC_0598.CR3'},
   ];
 
+  // ── near-duplicate / burst stacks — UI-only mock data ─────────────
+  // Real grouping (perceptual-hash similarity, burst-timestamp
+  // clustering) is a backend concern; this is just enough fake shape to
+  // build every visual/interaction state: a burst-only stack, a
+  // similar-only stack, and a stack that's both at once. `cover` is
+  // whichever member the (future) sharpness/exposure score picked as
+  // best — it's what shows on the collapsed card and defaults as the
+  // recommended "keep" when the stack is expanded.
+  // 连拍/相似堆叠：真实分组由后端 list_stacks() 给(分析趟里算的 phash + 拍摄时间)，
+  // 启动/重载/分析后 refreshStacks() 拉取；先空着，数据回来再由 rebuildStackIndex 填索引。
+  let STACKS = [];
+  let stackKeep = new Map();          // 每个 stack 当前"保留"的成员(默认=后端推荐的最锐封面)
+  const expandedStacks = new Set();
+  let photoIdToStack = new Map();
+  function rebuildStackIndex() {
+    stackKeep = new Map(STACKS.map(s => [s.id, s.cover]));
+    photoIdToStack = new Map();
+    STACKS.forEach(s => s.memberIds.forEach(id => photoIdToStack.set(id, s.id)));
+  }
+
   const TIER_LABEL = { bad: '废片', fix: '可修', good: '精选' };
   const PENDING_LABEL = '待分析';
   const HIST_PRESETS = {
@@ -1091,7 +1464,7 @@ svg { display: block; }
   // Array.isArray(state.folder) check can't tell those two apart.
   let isCombinedView = false;
 
-  const state = { filter: 'all', folder: 'all', view: 'time', selected: new Set(), search: '', camera: 'all' };
+  const state = { filter: 'all', folder: 'all', view: 'time', selected: new Set(), stackMode: true, search: '', camera: 'all' };
   // ids in the exact order the grid just rendered them — the fullscreen
   // preview's prev/next buttons walk this, so they always match what's
   // currently on screen (whatever filter/folder/view is active).
@@ -1127,14 +1500,17 @@ svg { display: block; }
 
   function refreshAnalyzeButton() {
     const pending = tierCounts().pending;
-    el('#analyze-count').textContent = pending;
-    el('#btn-analyze').disabled = pending === 0;
+    const needs = Math.max(pending, window.__needsWork || 0);   // 含旧数据"缺感知哈希待补"
+    el('#analyze-count').textContent = needs;
+    el('#btn-analyze').disabled = needs === 0;
   }
 
   function refreshToolbar() {
     const n = state.selected.size;
     el('#sel-count').textContent = n;
     el('#btn-delete').disabled = n === 0;
+    const cs = el('#btn-clear-sel');
+    if (cs) { cs.style.display = n > 0 ? '' : 'none'; const csc = el('#clear-sel-count'); if (csc) csc.textContent = n; }
   }
 
   function renderFolderNav() {
@@ -1144,6 +1520,8 @@ svg { display: block; }
       return;
     }
     const folderIcon = '<svg class="folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>';
+    const laptopIcon = '<svg class="folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M2 20h20"/></svg>';   // 本地文件夹标识
+    const trashIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2m-9 0 1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/></svg>';
     const isMulti = Array.isArray(state.folder);
     const isFolderActive = (f) => isMulti ? state.folder.includes(f) : state.folder === f;
     const allActive = state.folder === 'all' ? ' active' : '';
@@ -1152,9 +1530,13 @@ svg { display: block; }
       const count = PHOTOS.filter(p => p.folder === f).length;
       const active = isFolderActive(f) ? ' active' : '';
       const checked = selectedFolderSet.has(f) ? ' checked' : '';
-      return `<div class="side-item folder-row${active}" data-folder="${f}" role="button" tabindex="0">
-        <input type="checkbox" class="folder-check" data-multi-folder="${f}"${checked} aria-label="选中 ${f} 以合并显示" />
-        ${folderIcon}<span class="folder-row-label">${(window.__folderNames && window.__folderNames[f]) || f}</span><span class="count">${count}</span>
+      return `<div class="folder-swipe" data-folder="${f}">
+        <div class="folder-swipe-action" aria-hidden="true"></div>
+        <div class="folder-swipe-icon" aria-hidden="true">${trashIcon}</div>
+        <div class="side-item folder-row${active}" data-folder="${f}" role="button" tabindex="0">
+          <input type="checkbox" class="folder-check" data-multi-folder="${f}"${checked} aria-label="选中 ${f} 以合并显示" />
+          ${(window.__folderKinds && window.__folderKinds[f] === 'local') ? laptopIcon : folderIcon}<span class="folder-row-label">${(window.__folderNames && window.__folderNames[f]) || f}</span><span class="count">${count}</span>
+        </div>
       </div>`;
     }).join('');
 
@@ -1178,7 +1560,7 @@ svg { display: block; }
     const burst = p.burst ? `<span class="burst-badge">${p.burst}张</span>` : '';
     return `
       <div class="photo-card ${tierClass(p)}${sel}" data-id="${p.id}" data-od-id="photo-card-${p.id}">
-        <div class="photo-thumb" style="background-image:url('${p.thumbnail || ''}')">
+        <div class="photo-thumb" data-thumb="${p.thumbnail || ''}">
           <span class="photo-check" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path transform="translate(-1.3,0)" d="M4 12l6 6L20 6"/></svg>
           </span>
@@ -1190,6 +1572,132 @@ svg { display: block; }
           <div class="ftime">${p.time}</div>
         </div>
       </div>`;
+  }
+
+  // how many peeking layers a stack's card shows behind its cover —
+  // scales with the actual member count instead of always looking like
+  // exactly 2 photos. Capped at 4 extra layers (a "5-deep" look) since
+  // beyond that more layers read as visual noise, not more information.
+  function stackLayerCount(memberCount) {
+    if (memberCount <= 2) return 1;
+    if (memberCount === 3) return 2;
+    if (memberCount === 4) return 3;
+    return 4;
+  }
+
+  // collapsed tile standing in for a whole burst/similar group — shows
+  // the cover (best-scored member), a ×N count, and up to two
+  // independent burst/similar badges (either, both, or neither).
+  function stackCardHTML(stack) {
+    const cover = PHOTOS.find(p => p.id === stack.cover) || PHOTOS.find(p => p.id === stack.memberIds[0]);
+    if (!cover) return '';
+    const badges = `${stack.burst ? '<span class="stack-badge-burst" title="连拍">⚡</span>' : ''}${stack.similar ? '<span class="stack-badge-similar" title="相似">⧉</span>' : ''}`;
+    const layerCount = stackLayerCount(stack.memberIds.length);
+    const layers = Array.from({ length: layerCount }, (_, i) => `<div class="stack-layer" data-depth="${i + 1}"></div>`).join('');
+    return `
+      <div class="stack-card" data-stack-id="${stack.id}" data-od-id="stack-card-${stack.id}">
+        ${layers}
+        <div class="photo-card stack-card-thumb ${tierClass(cover)}" data-id="${cover.id}">
+          <div class="photo-thumb" style="background-image:url('${cover.thumbnail || ''}')">
+            <span class="stack-count-badge" data-od-id="stack-count-badge-${stack.id}">×${stack.memberIds.length}</span>
+            <div class="stack-badges">${badges}</div>
+            <span class="tier-tag ${tierClass(cover)}">${tierLabelOf(cover)}</span>
+          </div>
+          <div class="photo-meta">
+            <div class="fname">${cover.name}</div>
+            <div class="ftime">${cover.time}</div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  // expanded state — every member inline in one full-width strip, with
+  // the recommended-keep member starred/highlighted and a keep/delete
+  // pair of actions on each.
+  function stackExpandHTML(stack) {
+    const members = stack.memberIds.map(id => PHOTOS.find(p => p.id === id)).filter(Boolean);
+    const keepId = stackKeep.get(stack.id);
+    const badges = `${stack.burst ? '<span class="stack-badge-burst" title="连拍">⚡</span>' : ''}${stack.similar ? '<span class="stack-badge-similar" title="相似">⧉</span>' : ''}`;
+    return `
+      <div class="stack-expand" data-stack-id="${stack.id}" data-od-id="stack-expand-${stack.id}">
+        <div class="stack-expand-head">
+          <span class="stack-expand-title">共 ${members.length} 张 ${badges}</span>
+          <button class="btn btn-sm stack-collapse" data-stack-id="${stack.id}" data-od-id="stack-collapse-${stack.id}">收起</button>
+        </div>
+        <div class="stack-expand-grid">
+          ${members.map(p => `
+            <div class="stack-member${p.id === keepId ? ' is-keep' : ''}${state.selected.has(p.id) ? ' selected' : ''}" data-id="${p.id}" data-od-id="stack-member-${p.id}">
+              <div class="photo-thumb" data-thumb="${p.thumbnail || ''}">
+                ${p.id === keepId ? '<span class="stack-keep-star" title="推荐保留">★</span>' : ''}
+              </div>
+              <div class="stack-member-actions">
+                <button class="stack-keep${p.id === keepId ? ' active' : ''}" data-id="${p.id}" data-stack-id="${stack.id}" data-od-id="stack-keep-${p.id}">保留</button>
+                <button class="stack-delete" data-id="${p.id}" data-stack-id="${stack.id}" data-od-id="stack-delete-${p.id}">删除</button>
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>`;
+  }
+
+  // drop-in replacement for `items.map(cardHTML).join('')` — when stack
+  // mode is on, a group's members collapse to one card (or expand strip)
+  // the first time any of them is encountered; renderedStackIds is
+  // shared across the whole render() pass so a stack can't be emitted
+  // twice even if its members land in more than one day/tier group.
+  function stackMemberCardHTML(p, stack, isKeep, isFirst) {
+    const sel = state.selected.has(p.id) ? ' selected' : '';
+    const badges = `${stack.burst ? '<span class="stack-badge-burst" title="连拍">⚡</span>' : ''}${stack.similar ? '<span class="stack-badge-similar" title="相似">⧉</span>' : ''}`;
+    // 最锐那张的★兼作"收起整组"按钮(用户建议:省一个钮、不与左下角档位标识打架)
+    const star = isKeep ? `<button class="stack-keep-star" data-stack-id="${stack.id}" title="最锐 · 点此收起这组">★</button>` : '';
+    return `
+      <div class="photo-card stack-cell${isKeep ? ' is-keep' : ''}${sel} ${tierClass(p)}" data-id="${p.id}" data-stack-id="${stack.id}" data-od-id="stack-cell-${p.id}">
+        <div class="photo-thumb" data-thumb="${p.thumbnail || ''}">
+          <span class="photo-check" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path transform="translate(-1.3,0)" d="M4 12l6 6L20 6"/></svg></span>
+          <div class="stack-badges">${badges}</div>
+          ${star}
+          <button class="stack-cell-del" data-stack-id="${stack.id}" data-del-member="${p.id}" title="删除这张" aria-label="删除这张">✕</button>
+          <span class="tier-tag ${tierClass(p)}">${tierLabelOf(p)}</span>
+        </div>
+        <div class="photo-meta"><div class="fname">${p.name}</div><div class="ftime">${p.time}</div></div>
+      </div>`;
+  }
+
+  function renderCardsHTML(items, renderedStackIds, visibleIds) {
+    let html = '';
+    items.forEach(p => {
+      // 堆叠只在"全部+时间视图"有意义(浏览时折叠重复);按档位筛选/分类分组时不堆叠,
+      // 免把整组跨档位成员拽出来。
+      const useStacks = state.stackMode && state.filter === 'all' && state.view === 'time';
+      const stackId = useStacks ? photoIdToStack.get(p.id) : undefined;
+      if (!stackId) { html += cardHTML(p); if (visibleIds) visibleIds.push(p.id); return; }
+      if (renderedStackIds.has(stackId)) return;
+      renderedStackIds.add(stackId);
+      const stack = STACKS.find(s => s.id === stackId);
+      // 只算"还在库里"的成员——任何删除途径(✕/选中删/全屏删)后都对齐。其它重复删光只剩≤1张
+      // 的堆自动解散，成员回落普通照片卡(脱掉相似/★标识)。非破坏性(不改STACKS，撤销恢复后回组)。
+      const liveIds = stack ? stack.memberIds.filter(mid => PHOTOS.some(x => x.id === mid)) : [];
+      if (liveIds.length < 2) {
+        liveIds.forEach(mid => {
+          const mp = PHOTOS.find(x => x.id === mid);
+          if (mp) { html += cardHTML(mp); if (visibleIds) visibleIds.push(mp.id); }
+        });
+        return;
+      }
+      const cover = liveIds.includes(stack.cover) ? stack.cover : liveIds[0];
+      const liveStack = { id: stack.id, memberIds: liveIds, cover: cover, burst: stack.burst, similar: stack.similar };
+      if (expandedStacks.has(stackId)) {
+        const rawKeep = stackKeep.get(stack.id);
+        const keepId = liveIds.includes(rawKeep) ? rawKeep : cover;
+        liveIds.forEach((mid, mi) => {
+          const mp = PHOTOS.find(x => x.id === mid);
+          if (mp) { html += stackMemberCardHTML(mp, liveStack, mid === keepId, mi === 0); if (visibleIds) visibleIds.push(mp.id); }
+        });
+      } else {
+        html += stackCardHTML(liveStack);
+        // 折叠态只显封面、成员不在网格里→不进导航序列(全屏左右不会跳进看不见的折叠成员)
+      }
+    });
+    return html;
   }
 
   function render() {
@@ -1207,21 +1715,24 @@ svg { display: block; }
     // fullscreen preview's prev/next buttons walk the same sequence the
     // user is browsing, whatever the current filter/folder/view is.
     const visibleIds = [];
+    // shared across every group in this pass, so a stack that (in some
+    // filter/folder combination) has members split across groups still
+    // only ever renders its collapsed card/expand strip once.
+    const renderedStackIds = new Set();
     let html = '';
     if (state.view === 'time') {
       const days = [...new Set(list.map(p => p.day))];
       days.forEach(d => {
         const items = list.filter(p => p.day === d);
-        visibleIds.push(...items.map(p => p.id));
         html += `<div class="group-header"><h3>${d}</h3><span class="group-count">${items.length} 张</span></div>
-                 <div class="grid">${items.map(cardHTML).join('')}</div>`;
+                 <div class="grid">${renderCardsHTML(items, renderedStackIds, visibleIds)}</div>`;
       });
     } else {
-      const analyzedCount = list.filter(p => p.tier !== null).length;
-      if (analyzedCount === 0) {
+      const analyzedCount = PHOTOS.filter(p => p.tier !== null).length;   // 全库判,不受当前筛选影响
+      if (analyzedCount === 0 && state.filter === 'all') {
         html = '<p style="color:var(--muted); padding:48px; text-align:center; line-height:1.7;">这些照片还没有分析。<br>点击左侧「开始分析」，软件会把它们分成 废片 / 可修 / 精选 后在这里按类查看。</p>';
       }
-      const groups = analyzedCount === 0 ? [] : [
+      const groups = (analyzedCount === 0 && state.filter === 'all') ? [] : [
         { key: 'pending', label: PENDING_LABEL, dotVar: 'meta' },
         { key: 'bad', label: TIER_LABEL.bad, dotVar: 'danger' },
         { key: 'fix', label: TIER_LABEL.fix, dotVar: 'warn' },
@@ -1230,19 +1741,347 @@ svg { display: block; }
       groups.forEach(g => {
         const items = list.filter(p => (g.key === 'pending' ? p.tier === null : p.tier === g.key));
         if (!items.length) return;
-        visibleIds.push(...items.map(p => p.id));
         html += `<div class="group-header"><span class="group-dot" style="background:var(--${g.dotVar})"></span><h3>${g.label}</h3><span class="group-count">${items.length} 张</span></div>
-                 <div class="grid">${items.map(cardHTML).join('')}</div>`;
+                 <div class="grid">${renderCardsHTML(items, renderedStackIds, visibleIds)}</div>`;
       });
     }
     currentVisibleIds = visibleIds;
     contentEl.innerHTML = html || '<p style="color:var(--muted); padding:40px; text-align:center;">该分类下暂无照片</p>';
+    if (!window.__thumbObserver) {
+      // rootMargin 提前 300px 开始加载，滚动时不至于看到空白格
+      window.__thumbObserver = new IntersectionObserver((entries) => {
+        entries.forEach(en => {
+          if (!en.isIntersecting) return;
+          const d = en.target;
+          if (d.dataset.thumb) { d.style.backgroundImage = `url('${d.dataset.thumb}')`; d.removeAttribute('data-thumb'); }
+          window.__thumbObserver.unobserve(d);
+        });
+      }, { root: contentEl, rootMargin: '400px' });   // root=滚动容器#content，否则内部滚动不触发加载
+    }
+    contentEl.querySelectorAll('.photo-thumb[data-thumb]').forEach(d => window.__thumbObserver.observe(d));
+    contentEl.classList.toggle('stack-mode-on', state.stackMode);
+    applyStackExpandSpans();
     refreshSidebarCounts();
     refreshAnalyzeButton();
     refreshToolbar();
+    refreshStackToggle();
     renderFolderNav();
     updateFpNavButtons();
   }
+
+  // an expanded stack takes up only as many grid columns as it actually
+  // needs for its member count (clamped to however many columns the
+  // grid currently has) — a 2-photo stack shouldn't force a full-width
+  // strip with three empty columns' worth of unused space next to it.
+  function applyStackExpandSpans() {
+    document.querySelectorAll('.stack-expand').forEach(expandEl => {
+      const gridEl = expandEl.closest('.grid');
+      if (!gridEl) return;
+      const cols = getComputedStyle(gridEl).gridTemplateColumns.split(' ').filter(Boolean).length || 1;
+      const stack = STACKS.find(s => s.id === expandEl.dataset.stackId);
+      const memberCount = stack ? stack.memberIds.length : cols;
+      expandEl.style.gridColumn = `span ${Math.max(1, Math.min(memberCount, cols))}`;
+    });
+  }
+
+  // disabled + explains why when there's nothing left to fold — e.g.
+  // once every stack has had all its members individually deleted.
+  function refreshStackToggle() {
+    const btn = el('#toolbar-stack-toggle');
+    const hasStacks = STACKS.some(s => s.memberIds.filter(mid => PHOTOS.some(x => x.id === mid)).length > 1);
+    btn.disabled = !hasStacks;
+    btn.title = hasStacks ? '把连拍/相似的照片折叠成一堆' : '当前没有可折叠的连拍或相似照片';
+    btn.classList.toggle('active', state.stackMode && hasStacks);
+  }
+  el('#toolbar-stack-toggle').addEventListener('click', () => {
+    state.stackMode = !state.stackMode;
+    render();
+  });
+
+  // expand/collapse a stack, reassign which member is "keep", or delete
+  // one member outright (moved out of the stack and out of the library,
+  // undoable — same shape as the rest of this app's delete actions).
+  function deleteStackMember(stackId, photoId) {
+    const stack = STACKS.find(s => s.id === stackId);
+    if (!stack) return;
+    const memberIdx = stack.memberIds.indexOf(photoId);
+    if (memberIdx === -1) return;
+    const photoIdx = PHOTOS.findIndex(p => p.id === photoId);
+    const removedPhoto = photoIdx !== -1 ? PHOTOS[photoIdx] : null;
+    const wasKeep = stackKeep.get(stackId) === photoId;
+
+    stack.memberIds.splice(memberIdx, 1);
+    photoIdToStack.delete(photoId);
+    if (removedPhoto) PHOTOS.splice(photoIdx, 1);
+    if (wasKeep) stackKeep.set(stackId, stack.memberIds[0]);
+    if (stack.memberIds.length === 0) expandedStacks.delete(stackId);
+
+    render();
+    // 乐观删除已更新UI；5秒后真正调后端把这张送回收站+删库记录，撤销则取消、后端从未被调；
+    // 退出软件前会被 flushPendingDeletes 强制提前执行，不会因为关软件而"从未真删"。
+    const stackEntry = { committed: false };
+    stackEntry.commit = async () => {
+      if (stackEntry.committed) return;
+      stackEntry.committed = true;
+      try {
+        const res = await window.pywebview.api.delete_photos([photoId]);
+        if (res && res.error) showToast('删除失败：' + res.error);
+        else { await refreshFolders(); renderFolderNav(); }
+      } catch (e) { showToast('删除失败：' + e); }
+    };
+    stackEntry.timer = setTimeout(stackEntry.commit, 5000);
+    window.__pendingDeletes.push(stackEntry);
+    showToast(`已删除 ${removedPhoto ? removedPhoto.name : '该照片'}`, {
+      undo: () => {
+        if (stackEntry.committed) return;
+        stackEntry.committed = true;
+        clearTimeout(stackEntry.timer);
+        stack.memberIds.splice(memberIdx, 0, photoId);
+        photoIdToStack.set(photoId, stackId);
+        if (removedPhoto) PHOTOS.splice(photoIdx, 0, removedPhoto);
+        if (wasKeep) stackKeep.set(stackId, photoId);
+        expandedStacks.add(stackId);
+        render();
+      },
+    });
+  }
+  // FLIP-style follow-through for the collapse↔expand swap: since render()
+  // replaces the grid's innerHTML wholesale, there's no persistent DOM
+  // node a CSS transition could animate — so the old element's on-screen
+  // rect is captured *before* re-rendering, then the freshly-rendered
+  // replacement is animated from that rect to its own natural position/
+  // size via the Web Animations API. That's what makes the reveal read
+  // as "this card grew into that strip" instead of an instant swap.
+  // Expanding/collapsing a stack changes how tall its row is, which
+  // instantly shoves every OTHER card below it (and every group-header
+  // further down the page) into a new position the moment render() runs
+  // — a hard, un-animated jump, since only the stack's own card/members
+  // ever got a transition. This is a general FLIP pass: snapshot where
+  // every card/header currently sits, let the DOM change happen, then
+  // for anything that ended up somewhere else, jump it back to its old
+  // spot with transitions off and immediately transition it forward to
+  // its real spot — so the "shove" reads as a smooth slide instead of a
+  // cut. The stack being toggled is excluded since it already has its
+  // own dedicated grow/deal animation.
+  function captureFlipRects() {
+    const map = new Map();
+    document.querySelectorAll('.group-header').forEach((el, i) => map.set('header:' + i, el.getBoundingClientRect()));
+    document.querySelectorAll('.grid > .photo-card, .grid > .stack-card').forEach(el => {
+      const key = el.classList.contains('stack-card') ? 'stack:' + el.dataset.stackId : 'photo:' + el.dataset.id;
+      map.set(key, el.getBoundingClientRect());
+    });
+    return map;
+  }
+  function playFlip(beforeRects, excludeKey) {
+    const settle = (el, key) => {
+      if (key === excludeKey) return;
+      const before = beforeRects.get(key);
+      if (!before) return; // wasn't on screen before — nothing to slide from
+      const after = el.getBoundingClientRect();
+      const dx = before.left - after.left;
+      const dy = before.top - after.top;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return; // didn't actually move
+      el.style.transition = 'none';
+      el.style.transform = `translate(${dx}px, ${dy}px)`;
+      requestAnimationFrame(() => {
+        el.style.transition = 'transform 340ms cubic-bezier(0.22, 1, 0.36, 1)';
+        el.style.transform = '';
+      });
+      el.addEventListener('transitionend', function onDone() {
+        el.style.transition = '';
+        el.removeEventListener('transitionend', onDone);
+      });
+    };
+    document.querySelectorAll('.group-header').forEach((el, i) => settle(el, 'header:' + i));
+    document.querySelectorAll('.grid > .photo-card, .grid > .stack-card').forEach(el => {
+      const key = el.classList.contains('stack-card') ? 'stack:' + el.dataset.stackId : 'photo:' + el.dataset.id;
+      settle(el, key);
+    });
+  }
+  // deals each member out from the collapsed card's position, fanning
+  // into place one after another like cards being dealt from a deck —
+  // a clean ease-out per card, staggered, no spring/overshoot. (A
+  // collapsed .stack-card only ever exists while its stack is NOT
+  // expanded, so this is only ever an expand — collapsing always goes
+  // through the dedicated "收起" button below.)
+  function dealStackMembersIn(expandEl, fromRect) {
+    if (!expandEl || !fromRect) return;
+    const members = Array.from(expandEl.querySelectorAll('.stack-member'));
+    members.forEach((memberEl, i) => {
+      const toRect = memberEl.getBoundingClientRect();
+      if (!toRect.width || !toRect.height) return;
+      const dx = fromRect.left + fromRect.width / 2 - (toRect.left + toRect.width / 2);
+      const dy = fromRect.top + fromRect.height / 2 - (toRect.top + toRect.height / 2);
+      const scale = Math.max(0.2, Math.min(fromRect.width / toRect.width, fromRect.height / toRect.height));
+      const fan = (i % 2 === 0 ? 1 : -1) * (3 + i * 2); // alternating, widening fan angle per card
+      memberEl.animate([
+        { transform: `translate(${dx}px, ${dy}px) scale(${scale}) rotate(${fan}deg)`, opacity: 0.4 },
+        { transform: 'translate(0, 0) scale(1) rotate(0deg)', opacity: 1 },
+      ], {
+        duration: 380,
+        delay: i * 55, // dealt out one at a time, not all at once
+        easing: 'cubic-bezier(0.22, 1, 0.36, 1)', // clean deceleration, no bounce-back
+        fill: 'both',
+      });
+    });
+    // the head bar (count/badges/收起 button) has no "from" position of
+    // its own to grow out of — a quick fade is enough so it doesn't just
+    // pop in ahead of the cards it's labeling.
+    const head = expandEl.querySelector('.stack-expand-head');
+    if (head) head.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 260, easing: 'ease-out' });
+  }
+  // the reverse deal: same per-card language as dealStackMembersIn, run
+  // backwards. Since render() destroys the real .stack-member nodes, the
+  // clones have to exist and be positioned FIRST, while the real cards
+  // are still on screen in the exact same spots — that's what makes the
+  // render() swap underneath them invisible. Doing it the other order
+  // (swap, then build clones from where things used to be) is what
+  // caused the collapsed card to flash into view first, with the old
+  // cards only fading out afterward on top of it.
+  function dealStackMembersOut(stackId) {
+    const expandEl = document.querySelector(`.stack-expand[data-stack-id="${stackId}"]`);
+    if (!expandEl) { expandedStacks.delete(stackId); render(); return; }
+    const members = Array.from(expandEl.querySelectorAll('.stack-member'));
+    const snapshots = members.map(m => {
+      const thumb = m.querySelector('.photo-thumb');
+      return { rect: m.getBoundingClientRect(), bg: thumb ? thumb.style.backgroundImage : '' };
+    });
+    if (!snapshots.length) { expandedStacks.delete(stackId); render(); return; }
+    const beforeFlipRects = captureFlipRects();
+
+    // ghost clones — pixel-for-pixel over the real cards — created
+    // before the DOM swap so the swap itself is invisible underneath
+    // them (nothing to compare against yet, so no flash).
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed; inset:0; pointer-events:none; z-index:70;';
+    document.body.appendChild(overlay);
+    const clones = snapshots.map(({ rect, bg }) => {
+      const clone = document.createElement('div');
+      clone.style.cssText = `position:fixed; left:${rect.left}px; top:${rect.top}px; width:${rect.width}px; height:${rect.height}px; border-radius:var(--radius-md); border:2px solid var(--border); background:var(--bg) ${bg} center/cover no-repeat;`;
+      overlay.appendChild(clone);
+      return clone;
+    });
+
+    // the grid swaps to its real collapsed layout RIGHT NOW — at the
+    // same instant the clones start gathering, not after — so the
+    // photos further down the page slide up into place in lockstep with
+    // the cards gathering into the deck, instead of everything else
+    // waiting and then snapping over afterward.
+    //
+    // But the collapsed card's own APPEARANCE (its stacked-paper look,
+    // cover thumbnail, ×N badge) is a separate thing from where it sits
+    // — it stays invisible (opacity, not display, so it still holds its
+    // exact layout space and the reflow above is unaffected) until every
+    // clone has actually finished gathering into it. Skipping this is
+    // exactly what regressed last time: the reflow fix made the grid
+    // swap immediately, which also made the collapsed card's look pop in
+    // immediately, right back to "already collapsed, then photos catch
+    // up" — the two need to be decoupled, not both tied to render().
+    expandedStacks.delete(stackId);
+    render();
+    playFlip(beforeFlipRects, 'stack:' + stackId);
+
+    const stackCard = document.querySelector(`.stack-card[data-stack-id="${stackId}"]`);
+    const toRect = stackCard ? stackCard.getBoundingClientRect() : null;
+    if (!toRect) { overlay.remove(); return; } // nowhere sensible to gather into — the swap above already happened
+    stackCard.style.transition = 'none';
+    stackCard.style.opacity = '0';
+
+    let remaining = clones.length;
+    const finishOne = () => {
+      remaining--;
+      if (remaining > 0) return;
+      overlay.remove();
+      // only now, with every card actually gathered, does the stacked
+      // look fade in — a quick fade reads as "it just formed", not as
+      // a hard cut either.
+      stackCard.style.transition = 'opacity 200ms ease-out';
+      stackCard.style.opacity = '';
+      stackCard.addEventListener('transitionend', function onFadeInDone() {
+        stackCard.style.transition = '';
+        stackCard.removeEventListener('transitionend', onFadeInDone);
+      }, { once: true });
+    };
+    clones.forEach((clone, i) => {
+      const fromRect = snapshots[i].rect;
+      const dx = toRect.left + toRect.width / 2 - (fromRect.left + fromRect.width / 2);
+      const dy = toRect.top + toRect.height / 2 - (fromRect.top + fromRect.height / 2);
+      const scale = Math.max(0.2, Math.min(toRect.width / fromRect.width, toRect.height / fromRect.height));
+      const fan = (i % 2 === 0 ? 1 : -1) * (3 + i * 2);
+      const anim = clone.animate([
+        { transform: 'translate(0, 0) scale(1) rotate(0deg)', opacity: 1 },
+        { transform: `translate(${dx}px, ${dy}px) scale(${scale}) rotate(${fan}deg)`, opacity: 0.3 },
+      ], {
+        duration: 320,
+        delay: (clones.length - 1 - i) * 55, // gathered up in reverse — the last card dealt is the first to return
+        easing: 'cubic-bezier(0.4, 0, 1, 1)', // clean accelerate-in, no bounce
+        fill: 'forwards',
+      });
+      anim.onfinish = finishOne;
+      anim.oncancel = finishOne;
+    });
+  }
+  function dealStackCellsIn(stackId, fromRect) {
+    const cells = Array.from(document.querySelectorAll(`.stack-cell[data-stack-id="${stackId}"]`));
+    const step = Math.min(45, 500 / Math.max(1, cells.length));
+    cells.forEach((cell, i) => {
+      const to = cell.getBoundingClientRect();
+      if (!to.width || !to.height) return;
+      const dx = fromRect.left + fromRect.width / 2 - (to.left + to.width / 2);
+      const dy = fromRect.top + fromRect.height / 2 - (to.top + to.height / 2);
+      const scale = Math.max(0.3, Math.min(fromRect.width / to.width, fromRect.height / to.height));
+      cell.animate([
+        { transform: `translate(${dx}px, ${dy}px) scale(${scale})`, opacity: 0.4 },
+        { transform: 'none', opacity: 1 },
+      ], { duration: 320, delay: i * step, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', fill: 'both' });
+    });
+  }
+  function collapseStackAnimated(stackId) {
+    const cells = Array.from(document.querySelectorAll(`.stack-cell[data-stack-id="${stackId}"]`));
+    if (!cells.length) { expandedStacks.delete(stackId); render(); return; }
+    const toRect = cells[0].getBoundingClientRect();   // 收拢到首张(收起后那摞卡的位置)
+    const step = Math.min(35, 400 / cells.length);
+    let remaining = cells.length;
+    const done = () => { if (--remaining > 0) return; expandedStacks.delete(stackId); render(); };
+    cells.forEach((cell, i) => {
+      const r = cell.getBoundingClientRect();
+      const a = cell.animate([
+        { transform: 'none', opacity: 1 },
+        { transform: `translate(${toRect.left - r.left}px, ${toRect.top - r.top}px)`, opacity: 0.1 },
+      ], { duration: 240, delay: (cells.length - 1 - i) * step, easing: 'cubic-bezier(0.4, 0, 1, 1)', fill: 'forwards' });
+      a.onfinish = done; a.oncancel = done;
+    });
+  }
+  contentEl.addEventListener('click', (e) => {
+    const starBtn = e.target.closest('.stack-keep-star');
+    if (starBtn) { collapseStackAnimated(starBtn.dataset.stackId); return; }
+    const delMem = e.target.closest('.stack-cell-del');
+    if (delMem) { deleteStackMember(delMem.dataset.stackId, Number(delMem.dataset.delMember)); return; }
+    const collapseBtn = e.target.closest('.stack-collapse');
+    if (collapseBtn) { expandedStacks.delete(collapseBtn.dataset.stackId); render(); return; }
+    const keepBtn = e.target.closest('.stack-keep');
+    if (keepBtn) { stackKeep.set(keepBtn.dataset.stackId, Number(keepBtn.dataset.id)); render(); return; }
+    const deleteBtn = e.target.closest('.stack-delete');
+    if (deleteBtn) { deleteStackMember(deleteBtn.dataset.stackId, Number(deleteBtn.dataset.id)); return; }
+    const memberEl = e.target.closest('.stack-member');
+    if (memberEl) {
+      if (e.detail > 1) return;   // 双击交给 dblclick 打开全屏
+      const mid = Number(memberEl.dataset.id);
+      if (state.selected.has(mid)) { state.selected.delete(mid); memberEl.classList.remove('selected'); }
+      else { state.selected.add(mid); memberEl.classList.add('selected'); }
+      refreshToolbar();
+      return;
+    }
+    const stackCard = e.target.closest('.stack-card');
+    if (stackCard) {
+      const id = stackCard.dataset.stackId;
+      const fromRect = stackCard.getBoundingClientRect();
+      expandedStacks.add(id);
+      render();
+      dealStackCellsIn(id, fromRect);   // 成员卡从那摞卡位置逐张发出(扑克牌效果)
+      return;
+    }
+  });
 
   // single click anywhere on a card toggles selection; double click opens
   // the fullscreen preview. Disambiguated via the native click's `detail`
@@ -1250,14 +2089,19 @@ svg { display: block; }
   // setTimeout — that removes the ~220ms "nothing happens yet" lag a
   // debounce timer would otherwise put between tap and visible response.
   contentEl.addEventListener('click', (e) => {
+    if (e.target.closest('.stack-card')) return; // handled by the stack click listener below
+    if (e.target.closest('.stack-keep-star, .stack-cell-del')) return; // 组内按钮不当选中
     const card = e.target.closest('.photo-card');
     if (!card || e.detail > 1) return; // detail>1 belongs to a dblclick gesture
     const id = Number(card.dataset.id);
-    state.selected.has(id) ? state.selected.delete(id) : state.selected.add(id);
-    render();
+    if (state.selected.has(id)) { state.selected.delete(id); card.classList.remove('selected'); }
+    else { state.selected.add(id); card.classList.add('selected'); }
+    refreshToolbar();   // 只更新选中计数/按钮，不重建网格(不跳、不重载图)
   });
 
   contentEl.addEventListener('dblclick', (e) => {
+    if (e.target.closest('.stack-keep-star, .stack-cell-del')) return; // 组内按钮不当双击查看
+    if (e.target.closest('.stack-card')) return;
     const card = e.target.closest('.photo-card');
     if (!card) return;
     // the gesture's first click already toggled selection above — undo
@@ -1265,8 +2109,9 @@ svg { display: block; }
     // stray "selected" card once the fullscreen preview closes) before
     // opening fullscreen.
     const id = Number(card.dataset.id);
-    state.selected.has(id) ? state.selected.delete(id) : state.selected.add(id);
-    render();
+    if (state.selected.has(id)) { state.selected.delete(id); card.classList.remove('selected'); }
+    else { state.selected.add(id); card.classList.add('selected'); }
+    refreshToolbar();
     openFullscreenPreview(id);
   });
 
@@ -1319,6 +2164,10 @@ svg { display: block; }
     // letting the dblclick handler below actually fire reliably.
     if (!btn || e.detail > 1) return;
     state.folder = btn.dataset.folder;
+    // 点文件夹=看这个文件夹的全部照片：清掉可能残留的档位筛选(如"待分析")，否则 文件夹∩档位
+    // 叠加会让"已全部分析的SD卡文件夹"在"待分析"下显示为空(用户困惑的根源)。
+    state.filter = 'all';
+    document.querySelectorAll('#tier-nav .side-item').forEach(b => b.classList.toggle('active', b.dataset.filter === 'all'));
     isCombinedView = false; // navigating directly always leaves combine mode
     render();
   });
@@ -1349,19 +2198,262 @@ svg { display: block; }
     showToast(nowSelected ? `已选中「${f}」，可点击「合并显示所选」` : `已取消选中「${f}」`);
   });
 
-  el('#view-toggle').addEventListener('click', (e) => {
-    const btn = e.target.closest('.seg-item');
-    if (!btn) return;
-    document.querySelectorAll('#view-toggle .seg-item').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    state.view = btn.dataset.view;
+  // deleting a folder removes it — and every photo inside it — from the
+  // library entirely; there's no other place those photos live, so once
+  // it's gone the photos are gone too (undo restores both together).
+  function deleteFolder(f) {
+    const folderIdx = importedFolders.indexOf(f);
+    if (folderIdx === -1) return;
+    const removedPhotos = PHOTOS.filter(p => p.folder === f);
+    const removedIds = new Set(removedPhotos.map(p => p.id));
+    const prevState = {
+      folder: state.folder,
+      isCombinedView,
+      previousFolderView,
+      wasStagedForCombine: selectedFolderSet.has(f),
+      selected: new Set(state.selected),
+    };
+
+    importedFolders.splice(folderIdx, 1);
+    for (let i = PHOTOS.length - 1; i >= 0; i--) {
+      if (removedIds.has(PHOTOS[i].id)) PHOTOS.splice(i, 1);
+    }
+    removedIds.forEach(id => state.selected.delete(id));
+    selectedFolderSet.delete(f);
+    if (previousFolderView === f) previousFolderView = 'all';
+
+    if (Array.isArray(state.folder)) {
+      if (state.folder.includes(f)) {
+        const next = state.folder.filter(x => x !== f);
+        // same collapse rule used everywhere else a combined view can
+        // shrink below 2 folders: fall back to the plain "all" view.
+        if (next.length < 2) { state.folder = 'all'; isCombinedView = false; }
+        else state.folder = next;
+      }
+    } else if (state.folder === f) {
+      state.folder = 'all';
+    }
+
+    render();
+    renderFolderNav();
+    // 延迟真删库：5秒 undo 窗口内不撤销，才真的从数据库移除该文件夹的照片记录+清缓存
+    // (不删原始照片文件，见后端 forget_folder 说明)。撤销则清掉这个定时器；退出软件前会被
+    // flushPendingDeletes 强制提前执行，不会因为关软件而"从未真删"。
+    const forgetIds = [...removedIds];   // 锁定当时这批id，避免延迟提交误删期间新导入的同名文件夹照片
+    const forgetEntry = { committed: false };
+    forgetEntry.commit = () => {
+      if (forgetEntry.committed) return;
+      forgetEntry.committed = true;
+      return window.pywebview.api.forget_photos(forgetIds).then(() => refreshFolders());
+    };
+    forgetEntry.timer = setTimeout(forgetEntry.commit, 5000);
+    window.__pendingDeletes.push(forgetEntry);
+    showToast(`已从相册移除文件夹「${f}」及其 ${removedPhotos.length} 张照片`, {
+      undo: () => {
+        if (forgetEntry.committed) return;
+        forgetEntry.committed = true;
+        clearTimeout(forgetEntry.timer);
+        importedFolders.splice(folderIdx, 0, f);
+        PHOTOS.push(...removedPhotos);
+        prevState.selected.forEach(id => state.selected.add(id));
+        if (prevState.wasStagedForCombine) selectedFolderSet.add(f);
+        state.folder = prevState.folder;
+        isCombinedView = prevState.isCombinedView;
+        previousFolderView = prevState.previousFolderView;
+        render();
+        renderFolderNav();
+      },
+    });
+  }
+
+  // swipe-to-delete a folder row — same press-and-drag language as the
+  // segmented sliders above: only follows the pointer while it's held
+  // down, snaps back below the commit threshold, and only past it does
+  // releasing actually delete. Delegated on the nav container since rows
+  // are replaced wholesale by renderFolderNav() on every change.
+  (function initFolderSwipe() {
+    const nav = el('#folder-nav');
+    const DELETE_THRESHOLD = 0.6; // 用户定为拖过60%才删(原50%易误触)。matches the industry-standard "past halfway" dismiss used by Android notification/Gmail-style swipe-to-delete
+    let dragging = false, dragMoved = false, startX = 0, swipeEl = null, rowEl = null, rowWidth = 0;
+
+    nav.addEventListener('mousedown', (e) => {
+      if (e.target.closest('[data-multi-folder]')) return; // checkbox has its own click semantics
+      const swipe = e.target.closest('.folder-swipe');
+      if (!swipe) return;
+      swipeEl = swipe;
+      rowEl = swipe.querySelector('.folder-row');
+      rowWidth = swipe.getBoundingClientRect().width;
+      startX = e.clientX;
+      dragging = true; dragMoved = false;
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const dx = Math.min(0, e.clientX - startX); // only leftward
+      if (Math.abs(dx) > 4) dragMoved = true;
+      if (!dragMoved) return;
+      swipeEl.classList.add('dragging');
+      // one property drives both the row's position and the red patch's
+      // width (see CSS) — they can't drift out of sync with each other.
+      swipeEl.style.setProperty('--swipe-x', `${dx}px`);
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (!dragging) return;
+      dragging = false;
+      if (!dragMoved) { swipeEl = null; rowEl = null; return; } // plain click — let it bubble normally
+      const dx = Math.min(0, e.clientX - startX);
+      const ratio = Math.min(1, Math.abs(dx) / rowWidth);
+      swipeEl.classList.remove('dragging');
+      const folder = swipeEl.dataset.folder;
+      if (ratio >= DELETE_THRESHOLD) {
+        swipeEl.style.setProperty('--swipe-x', '-100%');
+        setTimeout(() => deleteFolder(folder), 320);
+      } else {
+        swipeEl.style.setProperty('--swipe-x', '0px');
+      }
+      swipeEl = null; rowEl = null;
+    });
+    // a real drag also fires a trailing click on whatever the pointer
+    // lands on — swallow just that one so it doesn't also switch views
+    // or toggle the checkbox right after a delete-swipe.
+    nav.addEventListener('click', (e) => {
+      if (dragMoved) { dragMoved = false; e.stopImmediatePropagation(); }
+    }, true);
+    nav.addEventListener('dblclick', (e) => {
+      if (dragMoved) e.stopImmediatePropagation();
+    }, true);
+  })();
+
+  // ── sliding segmented control (shared by view-toggle & density-toggle) ──
+  // The thumb only follows the pointer while the mouse button is actually
+  // held down over the track — plain hovering does nothing, so just
+  // browsing the toolbar never sets it wandering on its own. Releasing
+  // over a different item commits that item; a plain click (no drag)
+  // commits normally too. onCommit(item) is the caller's state-mutation
+  // for "this item is now selected" — the active-class bookkeeping and
+  // thumb positioning are handled once, here, so both paths can't fire
+  // it twice.
+  function initSlidingSegmented(root, onCommit) {
+    const thumb = document.createElement('div');
+    thumb.className = 'seg-thumb';
+    root.prepend(thumb);
+    const items = () => Array.from(root.querySelectorAll('.seg-item'));
+
+    function moveThumbTo(item) {
+      const trackRect = root.getBoundingClientRect();
+      const itemRect = item.getBoundingClientRect();
+      thumb.style.width = itemRect.width + 'px';
+      thumb.style.transform = `translateX(${itemRect.left - trackRect.left - 2}px)`;
+      // whichever item the thumb is actually sitting over gets the dark
+      // label — this runs on every drag step too, so the text darkens
+      // and fades in real time as the thumb passes over each item.
+      items().forEach(b => b.classList.toggle('lit', b === item));
+    }
+    function sync() {
+      const active = root.querySelector('.seg-item.active');
+      if (active) moveThumbTo(active);
+    }
+    function nearestItemToX(x) {
+      const trackRect = root.getBoundingClientRect();
+      let nearest = items()[0], nearestDist = Infinity;
+      items().forEach(it => {
+        const r = it.getBoundingClientRect();
+        const center = (r.left + r.right) / 2 - trackRect.left;
+        const dist = Math.abs(center - x);
+        if (dist < nearestDist) { nearestDist = dist; nearest = it; }
+      });
+      return nearest;
+    }
+    function commit(item) {
+      if (!item.classList.contains('active')) {
+        items().forEach(b => b.classList.remove('active'));
+        item.classList.add('active');
+        onCommit(item);
+      }
+      sync();
+    }
+
+    let pressing = false, suppressClick = false;
+    root.addEventListener('mousedown', (e) => {
+      if (!e.target.closest('.seg-item')) return;
+      pressing = true;
+      root.classList.add('pressing');
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!pressing) return;
+      const trackRect = root.getBoundingClientRect();
+      const x = Math.max(0, Math.min(e.clientX - trackRect.left, trackRect.width));
+      moveThumbTo(nearestItemToX(x));
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (!pressing) return;
+      pressing = false;
+      root.classList.remove('pressing');
+      const trackRect = root.getBoundingClientRect();
+      const x = Math.max(0, Math.min(e.clientX - trackRect.left, trackRect.width));
+      // a real mouse click also fires right after this — suppress it so
+      // the drag-release commit below isn't immediately redone.
+      suppressClick = true;
+      commit(nearestItemToX(x));
+    });
+    root.addEventListener('click', (e) => {
+      if (suppressClick) { suppressClick = false; return; }
+      const item = e.target.closest('.seg-item');
+      if (item) commit(item);
+    });
+    window.addEventListener('resize', sync);
+    // land in the right spot immediately on load instead of visibly
+    // sliding in from the corner.
+    thumb.style.transition = 'none';
+    sync();
+    requestAnimationFrame(() => { thumb.style.transition = ''; });
+    return { sync };
+  }
+  const viewSeg = initSlidingSegmented(el('#view-toggle'), (item) => {
+    state.view = item.dataset.view;
     render();
   });
 
+  // ── select-all split button (main action stays instant-trigger; the
+  // tier it acts on is a persistent setting, only reachable via the caret).
+  // Picking a tier in the dropdown commits and closes immediately — no
+  // separate confirm step. ──────────────────────────────────────────
+  state.selectAllTier = localStorage.getItem('shiguang-select-all-tier') || 'bad';
+  el('#select-all-tier-label').textContent = TIER_LABEL[state.selectAllTier];
+
+  function renderSelectAllMenu() {
+    document.querySelectorAll('#select-all-menu .split-btn-menu-item').forEach(b => {
+      b.classList.toggle('selected', b.dataset.tier === state.selectAllTier);
+    });
+  }
+  function closeSelectAllMenu() {
+    el('#select-all-menu').classList.remove('open');
+    el('#btn-select-all-caret').classList.remove('open');
+  }
+  el('#btn-select-all-caret').addEventListener('click', (e) => {
+    e.stopPropagation();
+    renderSelectAllMenu();
+    const opening = !el('#select-all-menu').classList.contains('open');
+    el('#select-all-menu').classList.toggle('open', opening);
+    el('#btn-select-all-caret').classList.toggle('open', opening);
+  });
+  el('#select-all-menu').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const item = e.target.closest('.split-btn-menu-item');
+    if (!item) return;
+    state.selectAllTier = item.dataset.tier;
+    localStorage.setItem('shiguang-select-all-tier', state.selectAllTier);
+    el('#select-all-tier-label').textContent = TIER_LABEL[state.selectAllTier];
+    closeSelectAllMenu();
+    showToast(`全选档位已设为「${TIER_LABEL[state.selectAllTier]}」`);
+  });
+  document.addEventListener('click', closeSelectAllMenu);
+
+  // clicking the main button itself never opens the dropdown — only the
+  // small caret does — so this can't be mis-triggered by a normal click.
   el('#btn-select-bad').addEventListener('click', () => {
-    PHOTOS.filter(p => p.tier === 'bad').forEach(p => state.selected.add(p.id));
+    PHOTOS.filter(p => p.tier === state.selectAllTier).forEach(p => state.selected.add(p.id));
     render();
-    showToast('已选中全部「废片」照片');
+    showToast(`已选中全部「${TIER_LABEL[state.selectAllTier]}」照片`);
   });
 
   el('#btn-delete').addEventListener('click', () => {
@@ -1371,11 +2463,42 @@ svg { display: block; }
     commitDeleteAfterUndoWindow(ids, `已删除 ${ids.length} 张照片`);
   });
 
+  el('#btn-clear-sel').addEventListener('click', () => {
+    state.selected.clear();
+    contentEl.querySelectorAll('.photo-card.selected').forEach(c => c.classList.remove('selected'));
+    refreshToolbar();
+  });
+
   // ── import modal ──────────────────────────────────────────────
   const importModal = el('#import-modal');
   const folderCheckList = el('#folder-check-list');
   function openImport() { importModal.classList.remove('hidden'); refreshImportStats(); }
   function closeImport() { importModal.classList.add('hidden'); }
+
+  // 用后端检测到的真实卡数据填充「检测到存储卡」弹窗并打开它
+  function sgEscHtml(s) {
+    return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  }
+  function showCardModal(card) {
+    if (!card || !(card.folders || []).length) return;
+    folderCheckList.innerHTML = card.folders.map(f => `
+      <label class="folder-check-item">
+        <input type="checkbox" checked data-count="${f.count}" data-size="${(f.size_mb/1024).toFixed(3)}" />
+        <svg class="folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
+        <span class="folder-check-name">${sgEscHtml(f.name)}<span class="folder-check-path">${sgEscHtml(f.path)}</span></span>
+        <span class="folder-check-meta">${f.count} 张</span>
+      </label>`).join('');
+    // 真实路径用 property 赋值(不走HTML属性)，避免路径里的反斜杠/特殊字符转义问题
+    Array.from(folderCheckList.querySelectorAll('input')).forEach((cb, i) => { cb.value = card.folders[i].path; });
+    openImport();
+  }
+  // 后台监听线程检测到新插入的卡 → 推来这里弹窗
+  window.onCardDetected = showCardModal;
+  // 覆盖"开软件时卡已经插着"：启动主动叫后端检测当前插着的卡，有照片就弹独立小导入窗
+  // (走和运行时插卡同一条 present_card 路径，行为一致——都是小窗，不弹主窗内嵌框)。
+  (async () => {
+    try { await window.pywebview.api.popup_cards_now(); } catch (e) {}
+  })();
 
   function refreshImportStats() {
     const checked = Array.from(folderCheckList.querySelectorAll('input:checked'));
@@ -1388,15 +2511,26 @@ svg { display: block; }
 
   // openImport();  // 停用：不再启动就弹假的存储卡检测弹窗
   el('#btn-cancel-import').addEventListener('click', closeImport);
-  el('#btn-confirm-import').addEventListener('click', () => {
+  el('#btn-confirm-import').addEventListener('click', async () => {
     const checked = Array.from(folderCheckList.querySelectorAll('input:checked')).map(cb => cb.value);
-    checked.forEach(f => { if (!importedFolders.includes(f)) importedFolders.push(f); });
-    const total = checked.reduce((sum, f) => sum + (FOLDER_META[f]?.count || 0), 0);
+    if (!checked.length) { showToast('未勾选任何文件夹'); return; }
+    const confirmBtn = el('#btn-confirm-import');
+    confirmBtn.disabled = true;   // 导入期间禁用，防连点触发多次 import_folders
     closeImport();
-    render();
-    showToast(checked.length
-      ? `已导入 ${total} 张照片 · 前往侧边栏点击「开始分析」`
-      : '未勾选任何文件夹，没有导入照片');
+    showToast(`正在导入 ${checked.length} 个文件夹…`);
+    try {
+      const result = await window.pywebview.api.import_folders(checked);
+      if (result && result.error) { showToast('导入失败：' + result.error); return; }
+      PHOTOS.length = 0;
+      (result.photos || []).forEach(p => PHOTOS.push(p));
+      await refreshFolders();
+      await refreshStacks();
+      render();
+      renderFolderNav();
+      showToast(`已导入 ${result.imported} 张 · 前往侧边栏点击「开始分析」`);
+    } finally {
+      confirmBtn.disabled = false;
+    }
   });
   el('#btn-reimport').addEventListener('click', async () => {
     showToast('正在导入…');
@@ -1413,17 +2547,32 @@ svg { display: block; }
   // ── manual analysis trigger ───────────────────────────────────────
   // photos come in with tier:null (see PHOTOS above) — nothing gets
   // classified until the user explicitly asks for it here.
-  el('#btn-analyze').addEventListener('click', () => {
+  el('#btn-analyze').addEventListener('click', async () => {
     const pending = PHOTOS.filter(p => p.tier === null);
-    if (!pending.length) return;
+    // 旧数据虽已定档但缺感知哈希(__needsWork>0)，也要能点分析去补(出堆叠+用新模型重评)
+    if (!pending.length && !(window.__needsWork > 0)) return;
     el('#btn-analyze').disabled = true;
-    showToast(`正在分析 ${pending.length} 张照片的清晰度与曝光…`);
-    setTimeout(() => {
-      pending.forEach(p => { p.tier = p.autoTier; });
-      render();
-      showToast(`已完成 ${pending.length} 张照片的分析`);
-    }, 900);
+    showToast(`正在分析 ${Math.max(pending.length, window.__needsWork || 0)} 张照片的清晰度与曝光…`);
+    // 真实后台评分：清晰度(分块拉普拉斯+Tenengrad) + 曝光裁切 + 噪点 → 三档
+    const result = await window.pywebview.api.analyze_all();
+    if (result && result.error) {
+      showToast('分析失败：' + result.error);
+      el('#btn-analyze').disabled = false;
+      return;
+    }
+    PHOTOS.length = 0;
+    (result.photos || []).forEach(p => PHOTOS.push(p));
+    window.__needsWork = 0;   // 这一趟已把待处理(未定档+缺phash)都跑完
+    await refreshStacks();
+    render();
+    showToast(`已完成 ${result.analyzed} 张照片的分析`);
   });
+  // 后台评分逐张进度推送（api.analyze_all 每处理完一张调一次）
+  window.onAnalyzeProgress = function (done, total) {
+    const c = el('#analyze-count');
+    if (c) c.textContent = (total - done);
+    if (window.sgProgress) window.sgProgress(done, total, '正在分析照片');
+  };
 
   // ── fullscreen photo preview ─────────────────────────────────────
   const fpOverlay = el('#fp-overlay');
@@ -1431,8 +2580,32 @@ svg { display: block; }
   const fpImage = el('#fp-image');
   const fpSidebar = el('#fp-sidebar');
   const fpToggleInfo = el('#fp-toggle-info');
+  // 旋转90/270度时把图的长边缩进短边视口，避免转正后上下被裁
+  function computeFpFit() {
+    const s = fpStage.getBoundingClientRect();
+    fpFit = (fpRotation % 180 !== 0 && s.width && s.height)
+      ? Math.min(s.width, s.height) / Math.max(s.width, s.height) : 1;
+  }
+  // 旋转当前全屏图：delta=+90顺时针/-90逆时针。fpRotation 连续累加、**不归一化**，
+  // 这样 CSS transition 永远只转最近的 90°，不会在跨 0/360 边界时倒着绕一整圈。
+  // 存库/存本地时才归一化到 0/90/180/270（后端 rotate_photo 也 %360）。
+  function rotateFp(delta) {
+    if (fpPhotoId == null) return;
+    fpRotation = (fpRotation || 0) + delta;
+    computeFpFit();
+    applyFpTransform();
+    const idx = PHOTOS.findIndex(x => x.id === fpPhotoId);
+    if (idx >= 0) PHOTOS[idx].rotation = ((fpRotation % 360) + 360) % 360;
+    try { window.pywebview.api.rotate_photo(fpPhotoId, delta); } catch (e) {}
+  }
+  const fpRotCw = el('#fp-rotate-cw');
+  if (fpRotCw) fpRotCw.addEventListener('click', () => rotateFp(90));
+  const fpRotCcw = el('#fp-rotate-ccw');
+  if (fpRotCcw) fpRotCcw.addEventListener('click', () => rotateFp(-90));
   let fpPhotoId = null;
   let fpZoom = 1;
+  let fpRotation = 0;   // 当前全屏图的显示旋转角(0/90/180/270)
+  let fpFit = 1;        // 旋转90/270度时的适配缩放，防转正后长边超出横向视口被裁
   let fpPan = { x: 0, y: 0 };
 
   function buildHist(svgSel, data, color) {
@@ -1452,7 +2625,7 @@ svg { display: block; }
   }
 
   function applyFpTransform() {
-    fpImage.style.transform = `translate(${fpPan.x}px, ${fpPan.y}px) scale(${fpZoom})`;
+    fpImage.style.transform = `translate(${fpPan.x}px, ${fpPan.y}px) scale(${fpZoom * (fpFit || 1)}) rotate(${fpRotation || 0}deg)`;
     fpImage.classList.toggle('zoomed', fpZoom > 1);
     el('#fp-hint').textContent = fpZoom > 1 ? zoomHint(fpZoom) : '滚轮缩放放大 · 可拖动查看';
   }
@@ -1470,7 +2643,13 @@ svg { display: block; }
     fpPhotoId = id;
     fpZoom = 1;
     fpPan = { x: 0, y: 0 };
+    fpRotation = (PHOTOS.find(x => x.id === id) || {}).rotation || 0;
+    computeFpFit();
+    // 切换到新照片时瞬间摆到它自己的角度，不要带旋转动画(否则会从上一张的角度绕过去)
+    fpImage.style.transition = 'none';
     applyFpTransform();
+    void fpImage.offsetWidth;
+    fpImage.style.transition = '';
     fpImage.style.backgroundImage = `url('${p.thumbnail || ''}')`;
     // 切到新照片时复位过曝开关（否则开关显示"开"但图是新照片的普通图，状态错位）
     el('#expo-switch').classList.remove('on');
@@ -1533,6 +2712,7 @@ svg { display: block; }
     refreshExpoSpots(p);
     updateFpNavButtons();
 
+    applyFpInfo();   // 按当前 fpInfoOpen 决定详情面板开合(默认关)
     fpOverlay.classList.add('open');
   }
 
@@ -1541,6 +2721,13 @@ svg { display: block; }
     fpPhotoId = null;
   }
   el('#fp-close').addEventListener('click', closeFullscreenPreview);
+  const fpDelete = el('#fp-delete');
+  if (fpDelete) fpDelete.addEventListener('click', () => {
+    const id = fpPhotoId;
+    if (id == null) return;
+    closeFullscreenPreview();
+    trashPhoto(id);   // 复用单张删除(送回收站+5秒可撤销)
+  });
   document.addEventListener('keydown', (e) => {
     if (!fpOverlay.classList.contains('open')) return;
     if (e.key === 'Escape') { closeFullscreenPreview(); return; }
@@ -1587,11 +2774,17 @@ svg { display: block; }
     if (idx !== -1 && idx < currentVisibleIds.length - 1) openFullscreenPreview(currentVisibleIds[idx + 1]);
   });
 
+  // 详情面板默认关闭，点详情按钮才打开。开合状态记在 fpInfoOpen，全屏内切上一张/
+  // 下一张时保持用户上次的开合(openFullscreenPreview 里 applyFpInfo() 复位)。
+  let fpInfoOpen = false;
+  function applyFpInfo() {
+    fpSidebar.classList.toggle('open', fpInfoOpen);
+    fpStage.classList.toggle('info-open', fpInfoOpen);
+    fpToggleInfo.classList.toggle('active', fpInfoOpen);
+  }
   fpToggleInfo.addEventListener('click', () => {
-    const willOpen = !fpSidebar.classList.contains('open');
-    fpSidebar.classList.toggle('open', willOpen);
-    fpStage.classList.toggle('info-open', willOpen);
-    fpToggleInfo.classList.toggle('active', willOpen);
+    fpInfoOpen = !fpInfoOpen;
+    applyFpInfo();
     // the stage resize (see .fp-stage's CSS transition) is what actually
     // shrinks the photo to fit — background-size:contain re-fits itself
     // every frame for free. Once that resize settles, re-clamp the pan
@@ -1632,10 +2825,39 @@ svg { display: block; }
   fpStage.addEventListener('wheel', (e) => {
     e.preventDefault();
     fpZoom += e.deltaY < 0 ? 0.4 : -0.4;
-    fpZoom = Math.min(8, Math.max(1, fpZoom));
+    fpZoom = Math.min(16, Math.max(1, fpZoom));
     fpPan = clampFpPan(fpZoom, fpPan);
     applyFpTransform();
+    if (fpZoom > 2) ensureFpOriginal(fpPhotoId);   // 放大细看时换真正原图，看清像素/对焦
   }, { passive: false });
+
+  // 放大到高倍时按需加载原图(全分辨率)替掉2560预览，让像素级细节清晰(检查对焦用)。
+  // 原图大且慢，只在真放大某张时才调；拉到后若还停在这张、仍放大、没开过曝高亮才换上。
+  function ensureFpOriginal(id) {
+    window.__origShown = window.__origShown || {};
+    window.__origLoading = window.__origLoading || {};
+    if (window.__origShown[id]) {
+      if (fpPhotoId === id && !el('#expo-switch').classList.contains('on')) {
+        fpImage.style.backgroundImage = `url('${window.__origShown[id]}')`;
+      }
+      return;
+    }
+    if (window.__origLoading[id]) return;
+    window.__origLoading[id] = true;
+    window.pywebview.api.get_original(id).then(res => {
+      window.__origLoading[id] = false;
+      if (res && res.url) {
+        window.__origShown[id] = res.url;
+        const hi = new Image();
+        hi.onload = () => {
+          if (fpPhotoId === id && fpZoom > 1 && !el('#expo-switch').classList.contains('on')) {
+            fpImage.style.backgroundImage = `url('${res.url}')`;
+          }
+        };
+        hi.src = res.url;
+      }
+    });
+  }
 
   let fpDrag = null;
   fpImage.addEventListener('mousedown', (e) => {
@@ -1648,7 +2870,7 @@ svg { display: block; }
   window.addEventListener('mousemove', (e) => {
     if (!fpDrag) return;
     fpPan = clampFpPan(fpZoom, { x: fpDrag.panX + (e.clientX - fpDrag.startX), y: fpDrag.panY + (e.clientY - fpDrag.startY) });
-    fpImage.style.transform = `translate(${fpPan.x}px, ${fpPan.y}px) scale(${fpZoom})`;
+    fpImage.style.transform = `translate(${fpPan.x}px, ${fpPan.y}px) scale(${fpZoom * (fpFit || 1)}) rotate(${fpRotation || 0}deg)`;
   });
   window.addEventListener('mouseup', () => {
     if (!fpDrag) return;
@@ -1679,8 +2901,15 @@ svg { display: block; }
   }
 
   function openCompare() {
+    if (state.selected.size === 0) {
+      showToast('请先选择要对比的照片');
+      return;
+    }
+    if (state.selected.size < 2) {
+      showToast('请至少选择 2 张照片再进入对比模式');
+      return;
+    }
     let ids = [...state.selected];
-    if (ids.length < 2) ids = PHOTOS.slice(0, 3).map(p => p.id);
     if (ids.length > COMPARE_MAX) {
       showToast(`最多同屏对比 ${COMPARE_MAX} 张，已自动选取前 ${COMPARE_MAX} 张`);
     }
@@ -1711,11 +2940,12 @@ svg { display: block; }
         <button class="cc-tier-btn${p.tier === t ? ' active' : ''}" data-tier="${t}" data-cc-tier="${t}" data-id="${p.id}">${TIER_LABEL[t]}</button>`).join('');
       return `
         <div class="compare-cell ${tierClass(p)}" data-id="${p.id}" data-od-id="compare-cell-${p.id}">
-          <div class="compare-cell-img${zoom > 1 ? ' zoomed' : ''}" data-zoomimg="${p.id}" style="background-image:url('${p.thumbnail || ''}'); transform:translate(${pan.x}px, ${pan.y}px) scale(${zoom});"></div>
+          <div class="compare-cell-img${zoom > 1 ? ' zoomed' : ''}" data-zoomimg="${p.id}" style="background-image:url('${(window.__cmpPreview && window.__cmpPreview[p.id]) || p.thumbnail || ''}'); transform:translate(${pan.x}px, ${pan.y}px) scale(${zoom}) rotate(${(p.rotation || 0)}deg);"></div>
           <div class="compare-cell-bar">
             <span class="cc-fname">${p.name}</span>
             <div class="cc-tier-row">${tierBtns}</div>
             <div class="cc-icons">
+              <button class="cc-icon-btn cc-rotate" data-rotate="${p.id}" aria-label="顺时针旋转90°"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v4h-4"/></svg></button>
               <button class="cc-icon-btn cc-del" data-del="${p.id}" aria-label="从对比中移除"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
               <button class="cc-icon-btn cc-trash" data-trash="${p.id}" aria-label="删除照片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></svg></button>
             </div>
@@ -1723,6 +2953,17 @@ svg { display: block; }
           <span class="cc-zoom-hint">${zoomHint(zoom)}</span>
         </div>`;
     }).join('');
+    // 对比看图要清晰：给每张按需拉 2560 精细版(比512缩略图清楚)，拉到后重绘
+    window.__cmpPreview = window.__cmpPreview || {};
+    window.__cmpLoading = window.__cmpLoading || {};
+    items.forEach(p => {
+      if (window.__cmpPreview[p.id] || window.__cmpLoading[p.id]) return;
+      window.__cmpLoading[p.id] = true;
+      window.pywebview.api.get_preview(p.id).then(res => {
+        window.__cmpLoading[p.id] = false;
+        if (res && res.url) { window.__cmpPreview[p.id] = res.url; if (compareOverlay.classList.contains('open')) renderCompare(); }
+      });
+    });
   }
 
   function removeFromCompare(id) {
@@ -1742,11 +2983,22 @@ svg { display: block; }
     const folders = await window.pywebview.api.list_folders();
     importedFolders = folders.map(f => f.folder);
     window.__folderNames = {};
-    folders.forEach(f => { window.__folderNames[f.folder] = f.name; });
+    window.__folderKinds = {};   // folder→'card'|'local'：本地文件夹侧边栏用不同图标区分
+    folders.forEach(f => { window.__folderNames[f.folder] = f.name; window.__folderKinds[f.folder] = f.kind || 'card'; });
   }
 
+  // 待提交的延迟删除清单：关软件前必须把这里还没提交的立刻执行完，否则计时器随
+  // 页面一起销毁、数据库里从未真删，下次打开又"复活"(见 do_quit 里的flush调用)。
+  window.__pendingDeletes = [];
+  window.flushPendingDeletes = async function () {
+    const pending = window.__pendingDeletes.filter(e => !e.committed);
+    window.__pendingDeletes = [];
+    pending.forEach(e => clearTimeout(e.timer));
+    await Promise.all(pending.map(e => e.commit()));
+  };
+
   // 统一删除逻辑：先前端乐观移除（立刻消失），弹5秒可撤销toast，撤销则恢复、
-  // 后端从未被调用；超时才真正调后端把文件送进回收站+删库记录。
+  // 后端从未被调用；超时(或退出前被flush)才真正调后端把文件送进回收站+删库记录。
   function commitDeleteAfterUndoWindow(ids, label) {
     if (!ids.length) return;
     const idSet = new Set(ids);
@@ -1760,19 +3012,23 @@ svg { display: block; }
       if (compareIds.length === 0) compareOverlay.classList.remove('open');
       else renderCompare();
     }
-    let committed = false;
-    const timer = setTimeout(async () => {
-      committed = true;
+    const entry = { committed: false };
+    entry.commit = async () => {
+      if (entry.committed) return;
+      entry.committed = true;
       try {
         const res = await window.pywebview.api.delete_photos(ids);
         if (res && res.error) showToast('删除失败：' + res.error);
         else { await refreshFolders(); renderFolderNav(); }
       } catch (e) { showToast('删除失败：' + e); }
-    }, 5000);
+    };
+    entry.timer = setTimeout(entry.commit, 5000);
+    window.__pendingDeletes.push(entry);
     showToast(label, {
       undo: () => {
-        if (committed) return;
-        clearTimeout(timer);
+        if (entry.committed) return;
+        entry.committed = true;   // 撤销：标记已处理，防止之后被flush或超时再误删
+        clearTimeout(entry.timer);
         PHOTOS = PHOTOS.concat(removed).sort((a, b) => b.id - a.id);
         render();
         renderFolderNav();
@@ -1798,6 +3054,18 @@ svg { display: block; }
 
     const trashBtn = e.target.closest('[data-trash]');
     if (trashBtn) { trashPhoto(Number(trashBtn.dataset.trash)); return; }
+
+    const rotBtn = e.target.closest('[data-rotate]');
+    if (rotBtn) {
+      const id = Number(rotBtn.dataset.rotate);
+      const p = PHOTOS.find(x => x.id === id);
+      if (p) {
+        p.rotation = ((p.rotation || 0) + 90) % 360;
+        try { window.pywebview.api.rotate_photo(id, 90); } catch (e2) {}
+        renderCompare();
+      }
+      return;
+    }
 
     const tierBtn = e.target.closest('[data-cc-tier]');
     if (tierBtn) {
@@ -1831,7 +3099,7 @@ svg { display: block; }
     const id = Number(cell.dataset.id);
     let zoom = zoomMap.get(id) || 1;
     zoom += e.deltaY < 0 ? 0.4 : -0.4;
-    zoom = Math.min(8, Math.max(1, zoom));
+    zoom = Math.min(16, Math.max(1, zoom));
     zoomMap.set(id, zoom);
 
     const pan = clampPan(cell, zoom, panMap.get(id) || { x: 0, y: 0 });
@@ -1915,31 +3183,41 @@ svg { display: block; }
     addPopover.classList.remove('open');
   });
 
-  // ── theme toggle ────────────────────────────────────────────────
+  // ── theme dip — not a left/right switch: one dish that's either
+  // sunken (light, the default) or risen flush with the surface (dark).
+  // Clicking eases it from one elevation to the other. ────────────────
   const MOON_PATH = '<path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>';
   const SUN_PATH = '<circle cx="12" cy="12" r="4.5"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>';
-  function applyTheme(theme) {
+  const themeDip = el('#btn-theme');
+  function currentTheme() { return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'; }
+  let themeTransitionTimer;
+  function applyTheme(theme, animate = true) {
+    if (animate) {
+      // brief window where every element's color/background is allowed
+      // to transition, so the switch reads as a cross-fade instead of a
+      // hard cut — see the .theme-transitioning rule above.
+      document.documentElement.classList.add('theme-transitioning');
+      clearTimeout(themeTransitionTimer);
+      themeTransitionTimer = setTimeout(() => document.documentElement.classList.remove('theme-transitioning'), 420);
+    }
     document.documentElement.setAttribute('data-theme', theme);
     el('#theme-icon').innerHTML = theme === 'dark' ? SUN_PATH : MOON_PATH;
+    themeDip.classList.toggle('raised', theme === 'dark');
+    themeDip.setAttribute('aria-pressed', String(theme === 'dark'));
     localStorage.setItem('shiguang-theme', theme);
   }
-  el('#btn-theme').addEventListener('click', () => {
-    const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    applyTheme(next);
+  themeDip.addEventListener('click', () => {
+    applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
   });
-  applyTheme(localStorage.getItem('shiguang-theme') || 'light');
+  applyTheme(localStorage.getItem('shiguang-theme') || 'light', false);
 
   // ── grid density ────────────────────────────────────────────────
   function applyDensity(density) {
     document.documentElement.setAttribute('data-density', density);
-    document.querySelectorAll('#density-toggle .seg-item').forEach(b => b.classList.toggle('active', b.dataset.density === density));
     localStorage.setItem('shiguang-density', density);
   }
-  el('#density-toggle').addEventListener('click', (e) => {
-    const btn = e.target.closest('.seg-item');
-    if (btn) applyDensity(btn.dataset.density);
-  });
-  applyDensity(localStorage.getItem('shiguang-density') || 'comfortable');
+  const savedDensity = localStorage.getItem('shiguang-density') || 'comfortable';
+  applyDensity(savedDensity);
 
   // 搜索：防抖过滤(避免每敲一键就重画1000+张导致卡顿/丢字) + 加载动效 + 清除
   function resetSearchState() {
@@ -1980,6 +3258,8 @@ svg { display: block; }
       render();
     });
   })();
+  document.querySelectorAll('#density-toggle .seg-item').forEach(b => b.classList.toggle('active', b.dataset.density === savedDensity));
+  const densitySeg = initSlidingSegmented(el('#density-toggle'), (item) => applyDensity(item.dataset.density));
 
   // ── toast ───────────────────────────────────────────────────────
   let toastTimer;
@@ -2005,8 +3285,45 @@ svg { display: block; }
     toastTimer = setTimeout(() => t.classList.remove('show'), opts && opts.undo ? 5000 : 2600);
   }
 
-  window.onImportProgress = function (done, total) {
-    showToast(`正在导入 ${done}/${total}`);
+  // 底部固定进度条：导入/分析这类耗时批量操作用它显示"已处理X/共Y张(百分比)"，
+  // 让用户明确知道在载入、还剩多少，而不是以为卡死。完成后短暂停留再自动隐藏。
+  function sgProgress(done, total, label) {
+    let bar = document.getElementById('sg-progress');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'sg-progress';
+      bar.style.cssText = 'position:fixed; left:50%; bottom:24px; transform:translateX(-50%); z-index:9999; background:var(--surface,#fff); color:var(--fg,#222); border:1px solid var(--border,#ddd); border-radius:10px; padding:10px 16px; box-shadow:0 8px 24px rgba(0,0,0,.18); font-size:13px; min-width:260px;';
+      document.body.appendChild(bar);
+    }
+    const pct = total > 0 ? Math.round(done / total * 100) : 0;
+    bar.innerHTML = `<div style="margin-bottom:6px;">${label} ${done}/${total}（${pct}%）</div>`
+      + `<div style="height:6px; background:var(--border,#eee); border-radius:3px; overflow:hidden;"><div style="height:100%; width:${pct}%; background:var(--accent,#2b6cb0); transition:width .15s;"></div></div>`;
+    bar.style.display = 'block';
+    clearTimeout(bar._t);
+    if (done >= total) { bar._t = setTimeout(() => { bar.style.display = 'none'; }, 1200); }
+  }
+  window.sgProgress = sgProgress;
+  window.onImportProgress = function (done, total) { sgProgress(done, total, '正在导入照片'); };
+
+  // 独立小导入窗确认导入后，调这个让主窗重新拉照片并重绘
+  // 从后端拉真实堆叠分组(连拍/相似)，重建索引；失败或空则清空(网格退回平铺)。
+  async function refreshStacks() {
+    try {
+      const s = await window.pywebview.api.list_stacks();
+      STACKS = Array.isArray(s) ? s : [];
+    } catch (e) { STACKS = []; }
+    rebuildStackIndex();
+  }
+  window.reloadPhotos = async function () {
+    try {
+      const photos = await window.pywebview.api.list_photos();
+      PHOTOS.length = 0;
+      photos.forEach(p => PHOTOS.push(p));
+      await refreshFolders();
+      await refreshStacks();
+      render();
+      renderFolderNav();
+    } catch (e) {}
   };
 
   async function initFromBackend() {
@@ -2014,7 +3331,9 @@ svg { display: block; }
       const photos = await window.pywebview.api.list_photos();
       PHOTOS.length = 0;
       photos.forEach(p => PHOTOS.push(p));
+      try { const nc = await window.pywebview.api.needs_analysis_count(); window.__needsWork = (nc && nc.count) || 0; } catch (e) {}
       await refreshFolders();
+      await refreshStacks();
       render();
       renderFolderNav();
       // 后台给存量照片补读EXIF拍摄时间（仅原文件可访问的会被补），补完刷新排序
@@ -2034,7 +3353,57 @@ svg { display: block; }
   // 无边框窗口：标题栏三个按钮接后端窗口控制
   document.getElementById('win-min').addEventListener('click', () => window.pywebview.api.minimize_window());
   document.getElementById('win-max').addEventListener('click', () => window.pywebview.api.toggle_maximize());
-  document.getElementById('win-close').addEventListener('click', () => window.pywebview.api.close_window());
+  document.getElementById('win-close').addEventListener('click', () => handleCloseRequest());
+
+  // 关闭按钮行为：托盘=隐藏后台继续检测插卡；退出=真正关进程。可记住选择(localStorage)
+  function doCloseAction(action) {
+    if (action === 'quit') window.pywebview.api.quit_app();
+    else window.pywebview.api.hide_to_tray();
+  }
+  async function handleCloseRequest() {
+    const pref = localStorage.getItem('shiguang-close-pref');
+    if (pref === 'quit') { doCloseAction('quit'); return; }
+    let trayOk = true;
+    try { trayOk = await window.pywebview.api.tray_available(); } catch (e) {}
+    // 记住了"最小化"且托盘可用 → 直接执行；托盘不可用时不能静默隐藏(窗口会回不来)，
+    // 仍弹框让用户至少能选"退出"。
+    if (pref === 'tray' && trayOk) { doCloseAction('tray'); return; }
+    showCloseDialog(trayOk);
+  }
+  function showCloseDialog(trayOk) {
+    if (document.getElementById('close-modal')) return;   // 已弹出就不重复弹
+    const back = document.createElement('div');
+    back.className = 'modal-backdrop';
+    back.id = 'close-modal';
+    const minLabel = trayOk ? '最小化到托盘' : '最小化到任务栏';
+    const sub = trayOk
+      ? '最小化到托盘可以让它在后台继续检测存储卡；退出则完全关闭程序。'
+      : '托盘不可用，将改为最小化到任务栏（后台检测会停止）；退出则完全关闭程序。';
+    back.innerHTML = `
+      <div class="modal-card" style="max-width:380px;">
+        <h2>关闭拾光</h2>
+        <p class="modal-sub">${sub}</p>
+        <label class="no-drag" style="display:flex; align-items:center; gap:8px; margin:4px 0 6px; font-size:13px; color:var(--muted); cursor:pointer;">
+          <input type="checkbox" id="close-remember" /> 记住我的选择（之后不再询问）
+        </label>
+        <div class="modal-actions">
+          <button class="btn btn-sm" id="close-quit">退出</button>
+          <button class="btn btn-primary btn-sm" id="close-tray">${minLabel}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(back);
+    const finish = (action) => {
+      if (document.getElementById('close-remember').checked) {
+        localStorage.setItem('shiguang-close-pref', action);
+      }
+      back.remove();
+      doCloseAction(action);
+    };
+    document.getElementById('close-tray').addEventListener('click', () => finish('tray'));
+    document.getElementById('close-quit').addEventListener('click', () => finish('quit'));
+    // 点遮罩空白处 = 取消关闭(什么都不做)
+    back.addEventListener('click', (e) => { if (e.target === back) back.remove(); });
+  }
 
   if (window.pywebview && window.pywebview.api) initFromBackend();
   else window.addEventListener('pywebviewready', initFromBackend);
