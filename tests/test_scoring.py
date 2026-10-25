@@ -216,3 +216,87 @@ def test_uniform_soft_does_not_trigger_subject_lock():
 def test_score_accepts_iso_hint_without_crashing():
     result = scoring.score_image_bytes(_to_jpeg(_textured_gradient()), iso=6400)
     assert result["tier"] in ("bad", "fix", "good")
+
+
+# ── v2 曝光：只算"成片且没有细节"的死白(用户反馈：白色的东西都被判过曝) ──────────
+
+def _textured_white(size=512, frac=0.45):
+    """正常好片 + 下方一大片"本身就是白色"的物体(雪/白衣服)：亮度 236~254、带细纹理，层次都在。"""
+    arr = _sharp_photo(size).astype(np.float64)
+    rows = int(size * frac)
+    yy, xx = np.mgrid[0:rows, 0:size]
+    tex = 245 + 9 * np.sin(xx / 1.7) * np.cos(yy / 2.3)
+    arr[size - rows:] = np.stack([tex] * 3, axis=-1)
+    return np.clip(arr, 0, 255).astype(np.uint8)
+
+
+def test_textured_white_object_is_not_counted_as_blown():
+    """白色但纹理层次都在的物体不是过曝：死白占比应接近 0，也绝不能因此判废。"""
+    result = scoring.score_image_bytes(_to_png(_textured_white()))
+    assert result["metrics"]["over_pct"] < 2
+    assert result["tier"] != "bad"
+
+
+def test_small_specular_highlights_are_not_counted():
+    """零散的小亮点(反光/路灯)本来就该是白的，不算死白。"""
+    arr = _sharp_photo().copy()
+    rng = np.random.default_rng(5)
+    for _ in range(60):
+        y, x = rng.integers(4, 508, size=2)
+        arr[y - 1:y + 2, x - 1:x + 2] = 255
+    e = scoring.exposure(scoring._prep(_to_png(arr))[1])
+    assert e["over_pct"] < 0.5
+
+
+def test_flat_blown_sky_is_counted_and_bad():
+    """上方 30% 是平平一片 255 的天空(细节全丢)：死白占比约 30%，超过硬阈判废。"""
+    arr = _sharp_photo().copy()
+    arr[:int(512 * 0.3)] = 255
+    result = scoring.score_image_bytes(_to_png(arr))
+    assert 25 < result["metrics"]["over_pct"] < 35
+    assert result["tier"] == "bad"
+
+
+def test_clip_masks_flat_black_counts_but_textured_dark_does_not():
+    dark = np.zeros((256, 256, 3), np.uint8)
+    dark[:, 128:] = (np.indices((256, 128)).sum(axis=0) % 2 * 4)[..., None]   # 0/4 交替：暗但有起伏
+    dark[:, 128:] += 2
+    blown, crushed = scoring.clip_masks(dark)
+    assert not blown.any()
+    assert crushed[:, :120].mean() > 0.95          # 左半平平一片 0 → 死黑
+    assert crushed[:, 136:].mean() < 0.05          # 右半有起伏(极差>阈)→ 不算
+
+
+# ── v3：RAW 实测优先；预览只作退路 ──────────────────────────────
+
+def _raw(**kw):
+    base = {"trusted": True, "hl_clip_pct": 0.0, "color_clip_pct": 0.0, "shadow_pct": 0.0,
+            "snr_scene_db": 35.0, "snr18_db": 35.0, "rot": 0}
+    base.update(kw)
+    return base
+
+
+def test_raw_noise_bands():
+    """信噪比 <11 dB 判废(降噪也救不回)；11~20 dB 只降分、不废；≥20 dB 不受影响。"""
+    img = _to_jpeg(_sharp_photo())
+    assert scoring.score_image_bytes(img, raw=_raw(snr_scene_db=9.0))["tier"] == "bad"
+    mid = scoring.score_image_bytes(img, raw=_raw(snr_scene_db=15.0))
+    clean = scoring.score_image_bytes(img, raw=_raw(snr_scene_db=32.0))
+    assert mid["tier"] != "bad" and clean["tier"] != "bad"
+    assert clean["metrics"]["snr_scene_db"] == 32.0 and clean["metrics"]["measured_on"] == "raw"
+
+
+def test_raw_full_clip_is_bad_but_preview_only_raw_is_lenient():
+    """RAW 实测全通道饱和 12% → 废；同样 12% 只是预览上看到的(RAW 文件但 RAW 解不了) → 不废
+    (预览比 RAW 早 1~2 档到顶，可能还拉得回来)。"""
+    arr = _sharp_photo().copy()
+    arr[:int(512 * 0.12)] = 255
+    img = _to_png(arr)
+    assert scoring.score_image_bytes(_to_jpeg(_sharp_photo()), raw=_raw(hl_clip_pct=12.0))["tier"] == "bad"
+    assert scoring.score_image_bytes(img, preview_only_raw=True)["tier"] != "bad"
+    assert scoring.score_image_bytes(img)["tier"] == "bad"            # 本身就是 JPG：预览即成品
+
+
+def test_untrusted_raw_is_ignored():
+    r = scoring.score_image_bytes(_to_jpeg(_sharp_photo()), raw=_raw(trusted=False, snr_scene_db=3.0))
+    assert r["tier"] != "bad" and r["metrics"]["measured_on"] == "preview"

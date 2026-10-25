@@ -6,7 +6,8 @@ import webview
 from . import db
 from . import device_watch
 from . import tray as tray_module
-from .api import EXPO_CACHE_DIR, ORIG_CACHE_DIR, PREVIEW_CACHE_DIR, SHIGUANG_HOME, THUMB_CACHE_DIR, Api
+from .api import (EXPO_CACHE_DIR, ORIG_CACHE_DIR, PREVIEW_CACHE_DIR, SHIGUANG_HOME, THUMB_CACHE_DIR,
+                  THUMB_S_CACHE_DIR, Api, load_prefs)
 from .thumb_server import start_thumb_server
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -17,7 +18,7 @@ def _clear_caches():
     """关软件时清空所有图像磁盘缓存(缩略图/预览/过曝图/原图)，只保留 library.sqlite
     这份"记忆"(评价/EXIF/旋转/卡记忆)。用户明确要的"关闭删缓存、留数据"。代价：下次
     重开要重新生成缩略图(原文件可访问的会现场生成，拔卡的显示占位)。"""
-    for cache_dir in (THUMB_CACHE_DIR, PREVIEW_CACHE_DIR, EXPO_CACHE_DIR, ORIG_CACHE_DIR):
+    for cache_dir in (THUMB_CACHE_DIR, THUMB_S_CACHE_DIR, PREVIEW_CACHE_DIR, EXPO_CACHE_DIR, ORIG_CACHE_DIR):
         try:
             for f in cache_dir.glob("*"):
                 try:
@@ -26,8 +27,20 @@ def _clear_caches():
                     pass
         except OSError:
             pass
+def _write_boot_prefs(target, prefs):
+    """把偏好写成页面 <head> 里同步加载的 prefs.js(window.__sgPrefs)：JS 桥要等页面加载完才
+    注入，来不及在首帧前取偏好；直接写成脚本，深色模式等首帧就生效。写失败不影响启动。"""
+    try:
+        Path(target).write_text(
+            "window.__sgPrefs = " + json.dumps(prefs, ensure_ascii=False) + ";\n", encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
 # Phase 2A 起入口页换成接入真实数据的完整原型 app.html（旧的极简验证页 index.html 保留备用）
 FRONTEND_INDEX = _PROJECT_ROOT / "frontend" / "app.html"
+BOOT_PREFS_JS = _PROJECT_ROOT / "frontend" / "prefs.js"
 IMPORT_WINDOW_INDEX = _PROJECT_ROOT / "frontend" / "import_window.html"
 APP_ICON = _PROJECT_ROOT / "assets" / "shiguang.ico"
 INSTANCE_FILE = Path.home() / ".shiguang" / ".instance"   # 记录当前实例的HTTP端口，供单实例激活用
@@ -95,6 +108,8 @@ def main():
     # 认卡+重绑：若当前插着的卡换了盘符(E:→F:)，把它记忆里的照片路径重绑到当前盘符，
     # 让第一次 list_folders 就按当前盘符找到记忆文件夹(主线程执行，早于 webview 起窗)。
     api.sync_all_inserted_cards()
+    prefs = load_prefs()
+    _write_boot_prefs(BOOT_PREFS_JS, prefs)
     window = webview.create_window(
         "拾光 ShiGuang",
         str(FRONTEND_INDEX),
@@ -102,6 +117,8 @@ def main():
         width=1200,
         height=800,
         frameless=True,  # 无边框：原型自带的标题栏就是真窗口顶部，避免套两层窗口/重复的系统边框
+        # 深色模式用户：窗口底色也先是黑的，页面画出来之前不会白闪一下
+        background_color="#000000" if prefs.get("shiguang-theme") == "dark" else "#FFFFFF",
     )
     # 独立小导入窗：启动就建好但隐藏，托盘挂机插卡时只显示它(不打扰主窗)，确认导入后
     # 才显示主窗。启动就建(而非插卡时才建)是为了避开"从后台线程创建窗口"的脆弱性。
@@ -177,6 +194,7 @@ def main():
             event.wait(timeout=3)
         except Exception:
             pass
+        api.stop_background()   # 先停后台预生成缩略图，否则边清边写会残留缓存文件
         _clear_caches()
         if watcher:
             watcher.stop()
@@ -236,6 +254,15 @@ def main():
         except Exception:
             pass
 
+    def notify_main(msg):
+        # 主窗弹一条轻提示(插卡后台同步了新照片等)
+        try:
+            window.evaluate_js(
+                f"window.sgHostToast && window.sgHostToast({json.dumps(msg, ensure_ascii=False)})"
+            )
+        except Exception:
+            pass
+
     def push_import_progress(done, total):
         # 把导入进度推给小导入窗显示"已导入 X/共 Y 张"
         try:
@@ -274,6 +301,7 @@ def main():
         show_import=show_import, hide_import=hide_import,
         show_main=show_window, refresh_main=refresh_main,
         push_progress=push_import_progress, present_card=present_card,
+        notify_main=notify_main,
     )
 
     # 后台监听插卡：认卡+重绑→刷新侧边栏(记忆文件夹自动出现)→只把"新发现"的文件夹弹小窗
@@ -313,6 +341,7 @@ def main():
                 w.destroy()
             except Exception:
                 pass
+        api.stop_background()
         _clear_caches()   # 关软件清缩略图等图像缓存，只留 library.sqlite（用户决策）
         try:
             INSTANCE_FILE.unlink()   # 清掉单实例端口文件

@@ -1,0 +1,346 @@
+/* ══════════ 2026-10 体验大修：动效体系 + 新组件（接线脚本 Y 段追加，覆盖工作台同名样式）══════════ */
+:root {
+  /* 阻尼弹簧曲线(CSS linear() 采样)。snappy=干脆、几乎不过冲；bouncy=发牌/弹出的轻微回弹；
+   * smooth=临界阻尼无过冲(收拢、淡出)。脚本里的 SPRING 与这里同源。 */
+  --spring-snappy: linear(0, 0.0132, 0.0478, 0.0976, 0.1575, 0.2233, 0.2919, 0.3608, 0.4284, 0.4931, 0.5541, 0.6108, 0.6629, 0.7102, 0.7528, 0.7908, 0.8244, 0.8538, 0.8795, 0.9016, 0.9206, 0.9368, 0.9504, 0.9618, 0.9713, 0.9791, 0.9854, 0.9905, 0.9946, 0.9977, 1.0001, 1.0019, 1.0032, 1.0041, 1.0046, 1.0049, 1.005, 1.005, 1.0048, 1.0046, 1.0043, 1.0039, 1.0036, 1.0032, 1.0029, 1.0026, 1.0023, 1.002, 1);
+  --spring-bouncy: linear(0, 0.0117, 0.0434, 0.0902, 0.1479, 0.2131, 0.2827, 0.3542, 0.4257, 0.4955, 0.5625, 0.6255, 0.6842, 0.7379, 0.7866, 0.8301, 0.8686, 0.9021, 0.931, 0.9555, 0.976, 0.9929, 1.0064, 1.017, 1.0251, 1.031, 1.0349, 1.0373, 1.0383, 1.0383, 1.0374, 1.0358, 1.0338, 1.0314, 1.0288, 1.026, 1.0233, 1.0206, 1.0179, 1.0154, 1.0131, 1.011, 1.009, 1.0072, 1.0057, 1.0043, 1.0031, 1.0021, 1);
+  --spring-smooth: linear(0, 0.0144, 0.0511, 0.1024, 0.1625, 0.2272, 0.2932, 0.3585, 0.4214, 0.4809, 0.5366, 0.588, 0.635, 0.6777, 0.7162, 0.7508, 0.7817, 0.8092, 0.8335, 0.855, 0.8739, 0.8906, 0.9051, 0.9179, 0.929, 0.9387, 0.9471, 0.9544, 0.9607, 0.9662, 0.971, 0.975, 0.9786, 0.9816, 0.9843, 0.9865, 0.9885, 0.9901, 0.9916, 0.9928, 0.9938, 0.9947, 0.9955, 0.9962, 0.9967, 0.9972, 0.9976, 0.998, 1);
+  --ph-a: color-mix(in oklab, var(--fg), transparent 95%);
+  --ph-b: color-mix(in oklab, var(--fg), transparent 89%);
+  --glass: color-mix(in oklab, var(--surface) 84%, transparent);
+  --glass-line: color-mix(in oklab, var(--fg), transparent 89%);
+  --sticky-bg: color-mix(in oklab, var(--bg) 82%, transparent);
+  /* 字体：Windows 上没有苹方/SF，原字体栈会退到 Arial(显旧)。改用系统 UI 字体 Segoe UI Variable，
+   * 中文优先苹方(装了的话)再到微软雅黑 UI，观感接近苹果系的干净无衬线 */
+  --font-body: "SF Pro Text", -apple-system, "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --font-display: "SF Pro Display", -apple-system, "Segoe UI Variable Display", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+}
+
+/* 关掉浏览器的"滚动锚定"：展开/收起堆叠时它会偷偷改滚动位置，整屏像被推着往下滑。
+ * 顶部不留内边距：日期组头吸在内容区真正的顶边(以前停在 20px 内边距下沿，上面那条缝里还能
+ * 看见滚过去的照片)，并且和工具栏连成一整块 */
+.content { position: relative; overflow-anchor: none; padding-top: 0; }
+/* 网格里的字不可选：双击/Shift连选时不会顺带把文件名、档位标签刷成蓝色选区 */
+.content, .sel-bar, .sidebar, .toolbar { -webkit-user-select: none; user-select: none; }
+.toolbar input { -webkit-user-select: text; user-select: text; }
+.content.stack-mode-on { padding-left: var(--space-6); }
+
+/* ── 缩略图：图贴在 ::before 层；加载前是柔和的灰底占位，不再是刺眼的白格 ──
+ * 淡入只在"画面静止时新到的图"上短暂播一次(.fade-in，播完即摘)：以前每张图常驻 opacity 过渡，
+ * 快速滑动时几十张同时淡入，每张都要单独合成，拖滚动条每帧 40~60ms(实测)。 */
+.photo-thumb { background: var(--surface); overflow: hidden; isolation: isolate; }
+.photo-thumb::before {
+  content: ''; position: absolute; inset: 0; z-index: 0;
+  background-image: var(--img, none); background-size: cover; background-position: center;
+  opacity: 0;
+}
+.photo-thumb.is-loaded::before { opacity: 1; }
+.photo-thumb.fade-in::before { animation: sg-thumb-in 240ms ease-out; }
+@keyframes sg-thumb-in { from { opacity: 0; } }
+/* 卡片上的勾选圈/角标不用毛玻璃：每个 backdrop-filter 都是一个独立合成层，一屏几百张卡就是
+ * 几百层，滚动和图片加载时每帧都要重排这些层(卡顿主因)。换成实色半透明，观感几乎一样 */
+.photo-check, .stack-count-badge, .burst-badge, .stack-badge-burst, .stack-badge-similar {
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+.photo-check { background: rgba(0, 0, 0, 0.32); }
+/* 网格缩略图跟着用户的旋转走(以前只有全屏里转了，网格还是歪的) */
+.photo-thumb[data-rot="90"]::before, .photo-thumb[data-rot="270"]::before {
+  inset: auto; left: 16.6667%; top: -25%; width: 66.6667%; height: 150%;
+}
+.photo-thumb[data-rot="90"]::before { transform: rotate(90deg); }
+.photo-thumb[data-rot="180"]::before { transform: rotate(180deg); }
+.photo-thumb[data-rot="270"]::before { transform: rotate(270deg); }
+/* 未加载时是静态的柔和灰底(不做流光动画：冷启动的大图库里会有上千个占位，逐帧动画太费) */
+.photo-thumb:not(.is-loaded):not(.is-failed) {
+  background: linear-gradient(180deg, var(--ph-b), var(--ph-a)) var(--surface);
+}
+.photo-thumb.is-failed::after {
+  content: '无法预览'; position: absolute; inset: 0; z-index: 0;
+  display: grid; place-items: center; font-size: 11px; color: var(--meta);
+}
+.photo-thumb > * { z-index: 1; }
+
+/* ── 卡片：弹簧手感(按下微缩、松开回弹)，选中=抬起+实心勾 ── */
+.photo-card {
+  transition: transform 460ms var(--spring-bouncy), box-shadow 280ms ease, border-color 220ms ease;
+}
+.photo-card:hover { transform: translateY(-2px); }
+.photo-card:active { transform: scale(0.965); transition: transform 110ms cubic-bezier(0.3, 0, 0.5, 1); }
+.photo-card.selected { transform: translateY(-4px); }
+.photo-card.selected:active { transform: translateY(-4px) scale(0.965); }
+.photo-check { transition: background 160ms ease, border-color 160ms ease, transform 420ms var(--spring-bouncy), opacity 160ms ease; }
+.photo-card.selected .photo-check { transform: scale(1.08); }
+.photo-card .tier-tag { transition: background 220ms ease, color 220ms ease; }
+
+/* ── 分组：按天成组，组头吸顶，日期旁有整组勾选圈 ──
+ * 组头和工具栏是同一块"顶栏"：没吸住时是实底(与页面同色，看不出边)；吸住后变成与工具栏同色的
+ * 毛玻璃，底下一条细线(工具栏自己的分隔线去掉)，看起来就是顶栏往下长出来的一截，而不是贴纸。
+ * 只有吸住的那一个开毛玻璃(拍摄天数多时几十个组头都开模糊也是几十个合成层)。 */
+.toolbar { border-bottom-color: transparent; z-index: 20; }   /* 工具栏(含"一键全选"下拉)永远在吸顶组头之上 */
+.day-group + .day-group { margin-top: 18px; }
+.group-header {
+  position: sticky; top: 0; z-index: 4;
+  margin: 0 calc(-1 * var(--space-6)) 8px; padding: 12px var(--space-6) 10px;
+  display: flex; align-items: center; gap: 10px;
+  background: var(--bg);
+  transition: box-shadow 200ms ease, background-color 200ms ease;
+}
+.group-header.is-stuck {
+  background: color-mix(in oklab, var(--bg) 92%, transparent);
+  backdrop-filter: saturate(1.4) blur(24px); -webkit-backdrop-filter: saturate(1.4) blur(24px);
+  box-shadow: 0 1px 0 var(--border);
+}
+.group-header h3 { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+.group-header .group-sub { font-size: 12.5px; color: var(--muted); }
+.group-header .group-count { margin-left: 2px; }
+.group-check {
+  position: relative; flex: none; width: 22px; height: 22px; padding: 0; border-radius: 50%;
+  border: 1.5px solid color-mix(in oklab, var(--fg), transparent 68%); background: transparent;
+  display: grid; place-items: center; color: var(--accent-on); cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, transform 420ms var(--spring-bouncy);
+}
+.group-check svg { width: 12px; height: 12px; opacity: 0; transition: opacity 120ms ease; }
+.group-check:hover { border-color: var(--accent); transform: scale(1.1); }
+.group-check:active { transform: scale(0.92); transition-duration: 90ms; }
+.group-check.is-all { background: var(--accent); border-color: var(--accent); }
+.group-check.is-all svg { opacity: 1; }
+.group-check.is-some { border-color: var(--accent); background: color-mix(in oklab, var(--accent), transparent 82%); }
+.group-check.is-some::after {
+  content: ''; position: absolute; left: 50%; top: 50%; width: 9px; height: 2px; border-radius: 1px;
+  transform: translate(-50%, -50%); background: var(--accent);
+}
+
+/* 选择模式：有选中时其余照片也露出勾选圈(提示"现在点照片=加选") */
+.content.has-selection .photo-card[data-id]:not(.selected) .photo-check { background: rgba(0,0,0,0.22); }
+
+/* ── 堆叠(折叠的相似照片) ── */
+.stack-layer { transition: transform 420ms var(--spring-bouncy); }
+.stack-card .stack-check { cursor: pointer; padding: 0; }
+.stack-card .stack-check svg { width: 12px; height: 12px; color: var(--accent-on); opacity: 0; }
+.stack-card.selected .stack-check, .stack-card.partial .stack-check { background: var(--accent); border-color: var(--accent); }
+.stack-card.selected .stack-check svg { opacity: 1; }
+.stack-card.partial .stack-check::after {
+  content: ''; position: absolute; left: 50%; top: 50%; width: 8px; height: 2px; border-radius: 1px;
+  transform: translate(-50%, -50%); background: var(--accent-on);
+}
+.stack-card.selected .stack-card-thumb, .stack-card.partial .stack-card-thumb { transform: translateY(-4px); box-shadow: 0 18px 38px rgba(0,0,0,0.24); }
+.stack-count-badge {
+  left: auto; right: 8px; display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11.5px; padding: 3px 8px 3px 7px;
+}
+.stack-count-badge svg { width: 12px; height: 12px; }
+/* 展开后的成员卡：外圈一道淡蓝光环，一眼看出"这几张是一组" */
+.stack-cell { box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent), transparent 72%); }
+.stack-cell .photo-thumb { box-shadow: none; }
+.stack-cell.is-keep .photo-thumb { box-shadow: none; }
+.stack-cell.selected { box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent), transparent 55%), 0 18px 38px rgba(0,0,0,0.24); }
+
+/* 收起/删除时的"鬼影"层(在滚动容器里，跟着滚、被裁剪，不会盖到工具栏) */
+.sg-ghost-layer { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: visible; pointer-events: none; z-index: 6; }
+.sg-ghost { pointer-events: none; transition: none !important; }
+
+/* ── 空状态 ── */
+.empty-state { max-width: 420px; margin: 12vh auto 0; text-align: center; color: var(--muted); animation: sg-rise 520ms var(--spring-smooth) both; }
+.empty-state .empty-icon { width: 54px; height: 54px; margin: 0 auto 14px; border-radius: 16px; display: grid; place-items: center; background: color-mix(in oklab, var(--accent), transparent 88%); color: var(--accent); }
+.empty-state .empty-icon svg { width: 26px; height: 26px; }
+.empty-state h3 { margin: 0 0 6px; font-size: 17px; color: var(--fg); font-weight: 650; }
+.empty-state p { margin: 0; font-size: 13px; line-height: 1.7; }
+@keyframes sg-rise { from { opacity: 0; transform: translateY(10px); } }
+
+/* ── 底部浮动选择栏(选中照片后出现，替代原工具栏里的删除/对比/取消按钮) ──
+ * "液态玻璃"浮层(苹果 2025 年起的材质)：浅色模式下仍是浅色、和整体同一调子，但靠三样东西一眼
+ * 跳出来——① 顶边一道高光 + 外圈一根发丝描边，像一块浮起来的玻璃；② 底下两层柔和投影，明显悬空；
+ * ③ 最左边蓝色实心的"已选 N 张"计数药丸(主题色)。深色模式是抬高的深灰玻璃。
+ * 顶部进度胶囊、拖动时的日期标签用同一套材质。 */
+:root {
+  --hud-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(248, 248, 250, 0.66));
+  --hud-fg: #1d1d1f; --hud-sub: rgba(60, 60, 67, 0.62); --hud-line: rgba(60, 60, 67, 0.16);
+  --hud-hover: rgba(0, 0, 0, 0.06); --hud-danger: var(--danger);
+  --hud-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), inset 0 -1px 0 rgba(0, 0, 0, 0.035),
+    0 0 0 0.5px rgba(0, 0, 0, 0.16), 0 8px 22px -6px rgba(0, 0, 0, 0.20), 0 22px 54px -14px rgba(0, 0, 0, 0.22);
+  --hud-blur: blur(28px) saturate(2) brightness(1.04);
+}
+:root[data-theme="dark"] {
+  --hud-bg: linear-gradient(180deg, rgba(64, 64, 68, 0.80), rgba(44, 44, 47, 0.74));
+  --hud-fg: #f5f5f7; --hud-sub: rgba(235, 235, 245, 0.6); --hud-line: rgba(255, 255, 255, 0.14);
+  --hud-hover: rgba(255, 255, 255, 0.10); --hud-danger: #ff6961;
+  --hud-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 0 0 0.5px rgba(255, 255, 255, 0.14),
+    0 10px 26px -6px rgba(0, 0, 0, 0.55), 0 24px 60px -14px rgba(0, 0, 0, 0.6);
+  --hud-blur: blur(28px) saturate(1.6);
+}
+.main { position: relative; }
+.sel-bar {
+  position: absolute; left: 50%; bottom: 22px; z-index: 30;
+  display: flex; align-items: center; gap: 4px; padding: 6px 6px 6px 7px;
+  border-radius: 20px; background: var(--hud-bg); color: var(--hud-fg);
+  backdrop-filter: var(--hud-blur); -webkit-backdrop-filter: var(--hud-blur);
+  box-shadow: var(--hud-shadow);
+  transform: translate(-50%, 30px) scale(0.94); opacity: 0; pointer-events: none;
+  transition: opacity 180ms ease, transform 540ms var(--spring-bouncy);
+  white-space: nowrap;
+}
+.sel-bar.show { transform: translate(-50%, 0) scale(1); opacity: 1; pointer-events: auto; }
+.sel-bar-count { font-size: 13px; color: var(--hud-sub); padding: 0 8px 0 2px; display: inline-flex; align-items: center; gap: 6px; }
+/* 计数药丸：主题蓝实心，数字变化时弹一下(见 refreshSelectionBar) */
+.sel-bar-count b {
+  display: inline-block; min-width: 24px; padding: 2px 8px; border-radius: 999px; text-align: center;
+  background: var(--accent); color: #fff; font-family: var(--font-mono); font-weight: 700; font-size: 12.5px;
+  box-shadow: 0 2px 8px color-mix(in oklab, var(--accent), transparent 60%);
+}
+.sel-bar-sep { width: 1px; height: 22px; background: var(--hud-line); margin: 0 4px; }
+.sel-bar-label { font-size: 12px; color: var(--hud-sub); margin: 0 2px 0 4px; }
+.sel-bar-btn {
+  border: none; background: transparent; color: var(--hud-fg); font-size: 13px; font-weight: 500;
+  padding: 7px 11px; border-radius: 11px; display: inline-flex; align-items: center; gap: 6px;
+  transition: background 140ms ease, transform 360ms var(--spring-bouncy), opacity 140ms ease;
+}
+.sel-bar-btn:hover { background: var(--hud-hover); }
+.sel-bar-btn:active { transform: scale(0.93); transition-duration: 90ms; }
+.sel-bar-btn:disabled { opacity: 0.35; pointer-events: none; }
+.sel-bar-btn svg { width: 15px; height: 15px; }
+.sel-bar-btn .dot { width: 8px; height: 8px; border-radius: 50%; }
+.sel-bar-btn .dot.bad { background: var(--danger); }
+.sel-bar-btn .dot.fix { background: var(--warn); }
+.sel-bar-btn .dot.good { background: var(--success); }
+.sel-bar-btn.sel-danger { color: var(--hud-danger); }
+.sel-bar-btn.sel-danger:hover { background: color-mix(in oklab, var(--danger), transparent 86%); }
+.sel-bar-btn.sel-bar-close { width: 32px; height: 32px; padding: 0; justify-content: center; border-radius: 50%; color: var(--hud-sub); }
+
+/* toast 跟选择栏同一中轴；选择栏出现时自动让到它上方 */
+.toast { bottom: 24px; transition: opacity 200ms ease, transform 520ms var(--spring-bouncy), bottom 460ms var(--spring-snappy); }
+.toast { transform: translate(-50%, 16px) scale(0.96); }
+.toast.show { transform: translate(-50%, 0) scale(1); }
+.app-window.has-selection .toast { bottom: 88px; }
+
+/* ── 顶部进度胶囊(导入/分析)：与选择栏同一套深色浮层，不再和底部提示/选择栏抢位置 ── */
+.sg-progress {
+  position: absolute; left: 50%; z-index: 31; min-width: 300px;
+  padding: 9px 14px 11px; border-radius: 14px; background: var(--hud-bg);
+  backdrop-filter: var(--hud-blur); -webkit-backdrop-filter: var(--hud-blur);
+  box-shadow: var(--hud-shadow);
+  font-size: 12.5px; color: var(--hud-fg);
+  transform: translate(-50%, -12px) scale(0.97); opacity: 0; pointer-events: none;
+  transition: opacity 200ms ease, transform 500ms var(--spring-snappy);
+}
+.sg-progress.show { transform: translate(-50%, 0) scale(1); opacity: 1; }
+.sg-progress .row { display: flex; justify-content: space-between; gap: 16px; }
+.sg-progress .num { font-family: var(--font-mono); color: var(--hud-sub); }
+.sg-progress .bar { height: 4px; border-radius: 2px; margin-top: 7px; overflow: hidden; background: var(--hud-line); }
+.sg-progress .bar > i { display: block; height: 100%; width: 0; border-radius: 2px; background: var(--accent); transition: width 360ms var(--spring-smooth); }
+
+/* ── 下拉菜单(机型筛选 / 一键全选档位)：弹簧展开 ── */
+.sg-menu, .split-btn-menu {
+  display: block; opacity: 0; pointer-events: none;
+  transform: translateY(-6px) scale(0.96); transform-origin: top right;
+  transition: opacity 140ms ease, transform 380ms var(--spring-snappy);
+}
+.sg-menu.open, .split-btn-menu.open { opacity: 1; pointer-events: auto; transform: none; }
+.sg-menu {
+  position: fixed; z-index: 80; min-width: 210px; max-height: 60vh; overflow-y: auto; padding: 6px;
+  border-radius: 12px; background: var(--glass); transform-origin: top left;
+  backdrop-filter: blur(24px) saturate(1.8); -webkit-backdrop-filter: blur(24px) saturate(1.8);
+  border: 1px solid var(--glass-line); box-shadow: 0 16px 44px rgba(0,0,0,0.2);
+}
+.sg-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; border: none; background: transparent;
+  text-align: left; padding: 7px 10px; border-radius: 8px; font-size: 13px; color: var(--fg); cursor: pointer;
+}
+.sg-menu-item:hover { background: color-mix(in oklab, var(--accent), transparent 86%); }
+.sg-menu-item .n { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--meta); }
+.sg-menu-item.selected { color: var(--accent); font-weight: 600; }
+.sg-menu-item.selected::before { content: '✓'; width: 12px; }
+.sg-menu-item:not(.selected)::before { content: ''; width: 12px; }
+
+/* ── 按钮/侧栏/分段控件：统一弹簧手感 ── */
+.btn { transition: background 150ms ease, border-color 150ms ease, opacity 150ms ease, box-shadow 220ms ease, transform 440ms var(--spring-bouncy); }
+.side-item { transition: background 160ms ease, color 160ms ease, transform 380ms var(--spring-bouncy); }
+.side-item:active { transform: scale(0.975); transition-duration: 80ms; }
+/* 文件夹行按住左滑删除：位移必须压过上面"按下微缩"的 transform——否则按住拖动时文件夹标签
+ * 钉在原地不动，盖住下面的红色删除区，只从边缘露出一点颜色(用户报的 bug) */
+.folder-swipe .folder-row:active { transform: translateX(var(--swipe-x, 0px)); }
+.folder-swipe.dragging .folder-row:active { transition: none; }
+/* 左滑删除：不再是整块红底被标签挡着露出来，而是一颗红色胶囊从标签后面挤出来(见 ux_folder.js)。
+ * 宽度/缩放由脚本里的弹簧逐帧写入；过 50%(.armed)时垃圾桶放大、桶盖掀开 */
+.folder-swipe-action, .folder-swipe-icon { display: none; }
+.folder-swipe .folder-row { z-index: 1; transition: transform 560ms var(--spring-bouncy); }
+.folder-swipe-pill {
+  position: absolute; right: 6px; top: 4px; bottom: 4px; width: 0; z-index: 0;
+  border-radius: 999px; overflow: hidden; display: grid; place-items: center;
+  background: linear-gradient(180deg, #ff6259, #e2352c); color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38), 0 4px 12px rgba(226, 53, 44, 0.32);
+  transform-origin: right center; opacity: 0; pointer-events: none; will-change: width, transform;
+}
+.folder-swipe-pill svg { width: 16px; height: 16px; flex: none; transition: transform 460ms var(--spring-bouncy); }
+.folder-swipe-pill .lid { transform-origin: 4px 7px; transition: transform 460ms var(--spring-bouncy); }
+.folder-swipe.armed .folder-swipe-pill svg { transform: scale(1.14); }
+.folder-swipe.armed .folder-swipe-pill .lid { transform: translate(-1px, -2.6px) rotate(-26deg); }
+.seg-thumb { transition: transform 540ms var(--spring-bouncy), width 540ms var(--spring-bouncy); }
+.theme-dip, #toolbar-stack-toggle { transition: box-shadow 460ms var(--spring-smooth), transform 460ms var(--spring-bouncy), background 200ms ease, color 200ms ease; }
+
+/* ── 弹窗：毛玻璃遮罩 + 弹簧出现/快速消失 ── */
+.modal-backdrop { backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); transition: opacity 220ms ease; }
+.modal-card { transition: transform 540ms var(--spring-bouncy), opacity 200ms ease; }
+.modal-backdrop.hidden .modal-card { transform: translateY(12px) scale(0.94); opacity: 0; }
+#close-modal { animation: sg-fade-in 200ms ease both; }
+#close-modal .modal-card { animation: sg-sheet-in 560ms var(--spring-bouncy) both; }
+#close-modal.closing { animation: sg-fade-out 170ms ease both; }
+#close-modal.closing .modal-card { animation: sg-sheet-out 170ms ease both; }
+@keyframes sg-fade-in { from { opacity: 0; } }
+@keyframes sg-fade-out { to { opacity: 0; } }
+@keyframes sg-sheet-in { from { opacity: 0; transform: translateY(14px) scale(0.93); } }
+@keyframes sg-sheet-out { to { opacity: 0; transform: scale(0.97); } }
+
+/* ── 全屏细看：从缩略图"放大飞出"、关闭时飞回；缩放跟手(滚轮按光标位置放大) ── */
+.fp-overlay { transition: opacity 280ms ease; }
+.fp-stage { transition: right 480ms var(--spring-snappy), transform 480ms var(--spring-snappy); }
+.fp-sidebar { transition: transform 480ms var(--spring-snappy); }
+.fp-image { transition: transform 480ms var(--spring-snappy); }
+.fp-image.fp-live { transition: none !important; }
+.fp-image.fp-loading { filter: none; }
+.fp-hero { position: fixed; z-index: 49; background-size: cover; background-position: center; pointer-events: none; will-change: transform, clip-path; }
+.fp-overlay.hero-flying .fp-image { opacity: 0; }
+.fp-overlay.hero-flying .fp-stage { transform: none; transition: right 480ms var(--spring-snappy); }
+.fp-icon-btn { transition: background 150ms ease, opacity 150ms ease, transform 380ms var(--spring-bouncy); }
+.fp-icon-btn:active { transform: scale(0.9); transition-duration: 90ms; }
+.fp-nav-btn:active { transform: translateY(-50%) scale(0.9); }
+
+/* ── 照片区滚动条：看得见、好抓 ──
+ * 以前是 10px 宽、15% 透明度的淡灰条，用户根本没发现右边能拖。现在是一根清楚的胶囊(两侧留透明边，
+ * 视觉 8px、可点区域 14px)，悬停/拖动时变粗变深；最短 44px，大图库里也抓得住。 */
+.content::-webkit-scrollbar { width: 14px; }
+.content::-webkit-scrollbar-track { background: transparent; }
+.content::-webkit-scrollbar-thumb {
+  min-height: 44px; border-radius: 7px; border: 3px solid transparent; background-clip: padding-box;
+  background-color: color-mix(in oklab, var(--fg), transparent 64%);
+}
+.content::-webkit-scrollbar-thumb:hover { border-width: 2px; background-color: color-mix(in oklab, var(--fg), transparent 48%); }
+.content::-webkit-scrollbar-thumb:active { border-width: 2px; background-color: color-mix(in oklab, var(--fg), transparent 36%); }
+/* ── 迷你密度(手机相册那样一屏几十上百张)：只留图，文件名/时间/档位字样都收起，档位看边框颜色 ── */
+[data-density="mini"] .grid { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 4px; }
+[data-density="mini"] .photo-card { border-width: 1.5px; border-radius: 7px; }
+[data-density="mini"] .photo-card:hover { transform: none; }
+[data-density="mini"] .photo-meta, [data-density="mini"] .photo-card .tier-tag { display: none; }
+[data-density="mini"] .photo-check { width: 16px; height: 16px; top: 4px; left: 4px; border-width: 1.5px; }
+[data-density="mini"] .photo-check svg { width: 9px; height: 9px; }
+[data-density="mini"] .photo-card:not(.selected):not(:hover) .photo-check { opacity: 0; }
+[data-density="mini"] .content.has-selection .photo-card .photo-check { opacity: 1; }
+[data-density="mini"] .stack-count-badge { top: 4px; right: 4px; font-size: 10px; padding: 1px 5px 1px 4px; gap: 2px; }
+[data-density="mini"] .stack-count-badge svg { width: 10px; height: 10px; }
+[data-density="mini"] .stack-cell .stack-keep-star { top: 3px; font-size: 10px; padding: 1px 6px; }
+[data-density="mini"] .stack-cell-del { width: 18px; height: 18px; bottom: 4px; right: 4px; font-size: 10px; }
+[data-density="mini"] .stack-cell { box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent), transparent 66%); }
+[data-density="mini"] .photo-card.selected { transform: none; }
+[data-density="mini"] .day-group + .day-group { margin-top: 12px; }
+
+
+/* 侧边栏存储卡剩余空间 */
+.card-space { margin: 6px 0; font-size: 11.5px; color: var(--muted); }
+.card-space .cs-row + .cs-row { margin-top: 6px; }
+.card-space .cs-bar { height: 3px; border-radius: 3px; margin-top: 3px; overflow: hidden;
+  background: color-mix(in oklab, var(--fg), transparent 90%); }
+.card-space .cs-fill { height: 100%; border-radius: 3px; background: var(--accent); }
+.card-space .cs-fill.low { background: var(--danger); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+}

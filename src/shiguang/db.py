@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS photos (
     is_card INTEGER NOT NULL DEFAULT 0,
     card_serial TEXT,
     phash TEXT,
-    focus_score REAL
+    focus_score REAL,
+    score_ver INTEGER
 );
 """
 
@@ -54,6 +55,10 @@ def _migrate(conn):
     if "focus_score" not in existing:
         # 主体锐度分(评分算出的 subject_vol)：堆叠里选"最锐封面"+组内排序用。NULL→排最后。
         conn.execute("ALTER TABLE photos ADD COLUMN focus_score REAL")
+    if "score_ver" not in existing:
+        # 这张照片是用第几版评分算法评的(scoring.SCORE_VERSION)。老数据 NULL=按第 0 版算：算法升级后
+        # 会算进"待分析"，点一次分析即用新算法重评(手动改过的档保留)。
+        conn.execute("ALTER TABLE photos ADD COLUMN score_ver INTEGER")
     if "thumbnail" in existing:
         # 旧库升级：丢弃永久保存的缩略图字节，不再当"记忆"存库（只留编号+标签+EXIF）。
         # 需要 SQLite 3.35+ 支持原生 DROP COLUMN（Python 3.11 自带的版本都满足）。
@@ -136,6 +141,16 @@ def set_manual_tier(conn, photo_id, tier):
     conn.commit()
 
 
+def set_manual_tiers(conn, photo_ids, tier):
+    """一批照片一次改成同一档(选择栏批量标记)；单次提交，比逐张 set_manual_tier 快得多。"""
+    ids = list(photo_ids or [])
+    if not ids:
+        return 0
+    conn.executemany("UPDATE photos SET tier = ? WHERE id = ?", [(tier, pid) for pid in ids])
+    conn.commit()
+    return len(ids)
+
+
 def set_rotation(conn, photo_id, rotation):
     # rotation 归一化到 0/90/180/270，持久化每张的显示旋转角(用户手动转正拍歪的照片)
     conn.execute("UPDATE photos SET rotation = ? WHERE id = ?", (int(rotation) % 360, photo_id))
@@ -169,6 +184,31 @@ def set_analysis(conn, photo_id, auto_tier, phash=None, focus_score=None, keep_t
     conn.commit()
 
 
+def set_analysis_auto(conn, photo_id, auto_tier, phash=None, focus_score=None, score_ver=None):
+    """分析写回，"用户是否手动改过档"在同一条 UPDATE 里按**当前**行判定：tier 为空或仍等于旧
+    auto_tier(用户没动过)才跟随新判定，否则保留用户的档。SET 里的表达式都读更新前的旧值。
+    比"开局拍快照再判断"安全：分析途中用户刚手动改的档不会被覆盖。返回写入后的实际 tier。
+    score_ver：记下这次是用第几版算法评的(算法升级后据此重评)。"""
+    conn.execute(
+        "UPDATE photos SET tier = CASE WHEN tier IS NULL OR tier = auto_tier THEN ? ELSE tier END, "
+        "auto_tier = ?, phash = ?, focus_score = ?, score_ver = COALESCE(?, score_ver) WHERE id = ?",
+        (auto_tier, auto_tier, phash, focus_score, score_ver, photo_id),
+    )
+    conn.commit()
+    row = conn.execute("SELECT tier FROM photos WHERE id = ?", (photo_id,)).fetchone()
+    return row["tier"] if row else None
+
+
+def get_tiers(conn, photo_ids):
+    """{id: 当前 tier}——推给前端的档位以推送那一刻的库为准。"""
+    ids = list(photo_ids or [])
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    return {r["id"]: r["tier"] for r in
+            conn.execute(f"SELECT id, tier FROM photos WHERE id IN ({placeholders})", ids)}
+
+
 def set_phash(conn, photo_id, phash):
     """只写感知哈希(不碰 tier/focus_score)。给"已分析过但加 phash 列之前入库、phash 为空"
     的老照片补算用——不能覆盖用户已有的档位判定。"""
@@ -191,19 +231,23 @@ def list_for_grouping(conn):
     return cur.fetchall()
 
 
-def list_needs_analysis(conn):
-    """需要(重新)分析的照片：从未分析(tier IS NULL) 或 缺感知哈希(phash IS NULL，旧数据)。
+_NEEDS_ANALYSIS = "tier IS NULL OR phash IS NULL OR COALESCE(score_ver, 0) < ?"
+
+
+def list_needs_analysis(conn, score_ver=0):
+    """需要(重新)分析的照片：从未分析(tier IS NULL)、缺感知哈希(phash IS NULL，旧数据)、
+    或是用旧版评分算法评的(score_ver 低于当前版本)。
     带 tier/auto_tier 供判断用户是否手动改过档(tier!=auto_tier=手动改过，重评时保留)。
-    旧数据靠"缺phash"被纳入 → 点一次"分析"就能补phash(出堆叠)+用新模型重评。"""
+    旧数据靠"缺phash"/"旧版本"被纳入 → 点一次"分析"就能补phash(出堆叠)+用新模型重评。"""
     cur = conn.execute(
-        "SELECT id, path, iso, tier, auto_tier FROM photos WHERE tier IS NULL OR phash IS NULL"
+        f"SELECT id, path, iso, cam, tier, auto_tier FROM photos WHERE {_NEEDS_ANALYSIS}", (score_ver,)
     )
     return cur.fetchall()
 
 
-def needs_analysis_count(conn):
+def needs_analysis_count(conn, score_ver=0):
     row = conn.execute(
-        "SELECT COUNT(*) AS c FROM photos WHERE tier IS NULL OR phash IS NULL"
+        f"SELECT COUNT(*) AS c FROM photos WHERE {_NEEDS_ANALYSIS}", (score_ver,)
     ).fetchone()
     return row["c"]
 

@@ -4,19 +4,39 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>检测到存储卡</title>
+<script src="prefs.js"></script>
+<script>
+  // 跟主窗同一份偏好：主窗是深色，这个小窗也深色(prefs.js 由 app.py 启动时写出)
+  if ((window.__sgPrefs || {})['shiguang-theme'] === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+</script>
 <style>
   :root {
     --bg: #f5f5f7; --surface: #fff; --fg: #1d1d1f; --muted: #6e6e73;
-    --border: #e2e2e6; --accent: #0071e3; --accent-on: #fff; --danger: #ff3b30;
+    --border: #e2e2e6; --accent: #0071e3; --accent-on: #fff; --danger: #ff3b30; --success: #16a34a;
     --radius: 14px;
+    --spring: linear(0, 0.0117, 0.0434, 0.0902, 0.1479, 0.2131, 0.2827, 0.3542, 0.4257, 0.4955, 0.5625, 0.6255, 0.6842, 0.7379, 0.7866, 0.8301, 0.8686, 0.9021, 0.931, 0.9555, 0.976, 0.9929, 1.0064, 1.017, 1.0251, 1.031, 1.0349, 1.0373, 1.0383, 1.0383, 1.0374, 1.0358, 1.0338, 1.0314, 1.0288, 1.026, 1.0233, 1.0206, 1.0179, 1.0154, 1.0131, 1.011, 1.009, 1.0072, 1.0057, 1.0043, 1.0031, 1.0021, 1);
+  }
+  :root[data-theme="dark"] {
+    --bg: #000; --surface: #1c1c1e; --fg: #f5f5f7; --muted: #98989d;
+    --border: #38383a; --accent: #2997ff; --success: #30d158;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; }
   body {
-    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-family: -apple-system, "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
     background: var(--bg); color: var(--fg); display: flex; flex-direction: column;
     height: 100vh; user-select: none;
   }
+  .body.enter { animation: sg-in 520ms var(--spring) both; }
+  @keyframes sg-in { from { opacity: 0; transform: translateY(10px) scale(0.98); } }
+  .item { transition: border-color 140ms ease, background 140ms ease, transform 300ms var(--spring); }
+  .item:hover { border-color: var(--accent); }
+  .item:active { transform: scale(0.985); }
+  .btn { transition: filter 140ms ease, transform 300ms var(--spring); }
+  .btn:active { transform: scale(0.96); }
+  .ok-badge { width: 46px; height: 46px; margin: 6px auto 12px; border-radius: 50%; display: grid; place-items: center;
+    background: color-mix(in oklab, var(--success), transparent 85%); color: var(--success); }
+  .ok-badge svg { width: 24px; height: 24px; }
   .titlebar {
     height: 34px; flex: 0 0 auto; display: flex; align-items: center; padding: 0 12px;
     border-bottom: 1px solid var(--border); background: var(--surface);
@@ -51,8 +71,8 @@
 <body>
   <div class="titlebar pywebview-drag-region"><span class="t">拾光 · 检测到存储卡</span></div>
   <div class="body">
-    <h2>检测到存储卡</h2>
-    <p class="sub">勾选要导入的文件夹，确认后会记忆在侧边栏方便切换。导入后不会自动分析，需在主界面点「开始分析」。</p>
+    <h2 id="title">检测到存储卡</h2>
+    <p class="sub" id="sub">勾选要导入的文件夹，确认后会记忆在侧边栏方便切换。导入后不会自动分析，需在主界面点「开始分析」。</p>
     <div class="list" id="list"><div class="empty">正在读取存储卡…</div></div>
     <div class="stat" id="stat"></div>
   </div>
@@ -88,11 +108,25 @@
   // mode="known": 这张卡全认识(没有新文件夹要确认)，仅在主窗当前隐藏(缩托盘/最小化)时
   // 才会弹出——只是告知"已识别、已自动刷新"，不需要用户做任何选择，复用取消按钮当"好的"。
   window.renderCard = function (card) {
-    if (card && card.mode === 'known') {
+    // 每次弹出都轻轻"浮上来"一下(窗口是常驻隐藏、反复复用的)；同一次插卡的"同步完成"更新不再重播
+    const bodyEl = document.querySelector('.body');
+    if (!(card && card.mode === 'known' && card.syncing === false)) {
+      bodyEl.classList.remove('enter'); void bodyEl.offsetWidth; bodyEl.classList.add('enter');
+    }
+    const known = !!(card && card.mode === 'known');
+    $('#title').textContent = known ? '已识别存储卡' : '检测到存储卡';
+    $('#sub').style.display = known ? 'none' : '';
+    if (known) {
       $('#confirm').style.display = 'none';
       $('#cancel').textContent = '好的';
       $('#stat').textContent = '';
-      $('#list').innerHTML = `<div class="empty">已识别这张存储卡，${esc(String(card.known_count || 0))} 个文件夹已导入过，已自动刷新到侧边栏。</div>`;
+      const synced = Number(card.synced_count || 0);
+      // 先立刻告知"已识别"，卡上新拍的照片在后台同步(可能要几秒)，同步完后端会再推一次最终结果
+      const tail = card.syncing ? '<br>正在检查卡上新拍的照片…'
+        : (synced > 0 ? `<br>卡上新拍的 ${synced} 张照片已自动同步进图库。` : '');
+      $('#list').innerHTML = `<div class="empty"><div class="ok-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></div>`
+        + `已识别这张存储卡，${esc(String(card.known_count || 0))} 个文件夹已导入过，已自动刷新到侧边栏。`
+        + tail + `</div>`;
       return;
     }
     $('#confirm').style.display = '';

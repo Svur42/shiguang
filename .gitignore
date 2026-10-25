@@ -4,3 +4,9 @@
 __pycache__/
 *.egg-info/
 tests/fixtures/*.cr2
+
+# 运行时生成：启动时由 app.py 写出的界面偏好脚本；测试对照用的改版前前端
+frontend/prefs.js
+frontend/app_baseline.html
+# UI 测试探针的截图输出
+scripts/ui_probe/out/

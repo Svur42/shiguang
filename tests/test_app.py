@@ -37,3 +37,19 @@ def test_clear_caches_survives_missing_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "ORIG_CACHE_DIR", home / "orig_cache")
 
     app._clear_caches()   # 不抛异常即通过
+
+
+def test_write_boot_prefs_emits_js_global(tmp_path):
+    """启动时把偏好写成 prefs.js(页面 <head> 同步加载)：深色模式首帧就生效，不先白后黑。"""
+    target = tmp_path / "prefs.js"
+
+    app._write_boot_prefs(target, {"shiguang-theme": "dark"})
+
+    text = target.read_text(encoding="utf-8")
+    assert text.startswith("window.__sgPrefs = ")
+    assert '"shiguang-theme": "dark"' in text
+
+
+def test_write_boot_prefs_never_breaks_startup(tmp_path):
+    """写不进去(只读目录等)也不能让软件起不来。"""
+    app._write_boot_prefs(tmp_path / "no" / "such" / "dir" / "prefs.js", {"a": "b"})   # 不抛即通过

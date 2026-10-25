@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>拾光 ShiGuang · RAW 照片质量筛选</title>
+<script src="prefs.js"></script>
 <style>
 /* ─────────────────────────────────────────────────────────────────
  * design-systems/apple/tokens.css — pasted verbatim
@@ -1136,6 +1137,382 @@ html.theme-transitioning #content * {
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: color-mix(in oklab, var(--fg), transparent 85%); border-radius: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
+/* ══════════ 2026-10 体验大修：动效体系 + 新组件（接线脚本 Y 段追加，覆盖工作台同名样式）══════════ */
+:root {
+  /* 阻尼弹簧曲线(CSS linear() 采样)。snappy=干脆、几乎不过冲；bouncy=发牌/弹出的轻微回弹；
+   * smooth=临界阻尼无过冲(收拢、淡出)。脚本里的 SPRING 与这里同源。 */
+  --spring-snappy: linear(0, 0.0132, 0.0478, 0.0976, 0.1575, 0.2233, 0.2919, 0.3608, 0.4284, 0.4931, 0.5541, 0.6108, 0.6629, 0.7102, 0.7528, 0.7908, 0.8244, 0.8538, 0.8795, 0.9016, 0.9206, 0.9368, 0.9504, 0.9618, 0.9713, 0.9791, 0.9854, 0.9905, 0.9946, 0.9977, 1.0001, 1.0019, 1.0032, 1.0041, 1.0046, 1.0049, 1.005, 1.005, 1.0048, 1.0046, 1.0043, 1.0039, 1.0036, 1.0032, 1.0029, 1.0026, 1.0023, 1.002, 1);
+  --spring-bouncy: linear(0, 0.0117, 0.0434, 0.0902, 0.1479, 0.2131, 0.2827, 0.3542, 0.4257, 0.4955, 0.5625, 0.6255, 0.6842, 0.7379, 0.7866, 0.8301, 0.8686, 0.9021, 0.931, 0.9555, 0.976, 0.9929, 1.0064, 1.017, 1.0251, 1.031, 1.0349, 1.0373, 1.0383, 1.0383, 1.0374, 1.0358, 1.0338, 1.0314, 1.0288, 1.026, 1.0233, 1.0206, 1.0179, 1.0154, 1.0131, 1.011, 1.009, 1.0072, 1.0057, 1.0043, 1.0031, 1.0021, 1);
+  --spring-smooth: linear(0, 0.0144, 0.0511, 0.1024, 0.1625, 0.2272, 0.2932, 0.3585, 0.4214, 0.4809, 0.5366, 0.588, 0.635, 0.6777, 0.7162, 0.7508, 0.7817, 0.8092, 0.8335, 0.855, 0.8739, 0.8906, 0.9051, 0.9179, 0.929, 0.9387, 0.9471, 0.9544, 0.9607, 0.9662, 0.971, 0.975, 0.9786, 0.9816, 0.9843, 0.9865, 0.9885, 0.9901, 0.9916, 0.9928, 0.9938, 0.9947, 0.9955, 0.9962, 0.9967, 0.9972, 0.9976, 0.998, 1);
+  --ph-a: color-mix(in oklab, var(--fg), transparent 95%);
+  --ph-b: color-mix(in oklab, var(--fg), transparent 89%);
+  --glass: color-mix(in oklab, var(--surface) 84%, transparent);
+  --glass-line: color-mix(in oklab, var(--fg), transparent 89%);
+  --sticky-bg: color-mix(in oklab, var(--bg) 82%, transparent);
+  /* 字体：Windows 上没有苹方/SF，原字体栈会退到 Arial(显旧)。改用系统 UI 字体 Segoe UI Variable，
+   * 中文优先苹方(装了的话)再到微软雅黑 UI，观感接近苹果系的干净无衬线 */
+  --font-body: "SF Pro Text", -apple-system, "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --font-display: "SF Pro Display", -apple-system, "Segoe UI Variable Display", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+}
+
+/* 关掉浏览器的"滚动锚定"：展开/收起堆叠时它会偷偷改滚动位置，整屏像被推着往下滑。
+ * 顶部不留内边距：日期组头吸在内容区真正的顶边(以前停在 20px 内边距下沿，上面那条缝里还能
+ * 看见滚过去的照片)，并且和工具栏连成一整块 */
+.content { position: relative; overflow-anchor: none; padding-top: 0; }
+/* 网格里的字不可选：双击/Shift连选时不会顺带把文件名、档位标签刷成蓝色选区 */
+.content, .sel-bar, .sidebar, .toolbar { -webkit-user-select: none; user-select: none; }
+.toolbar input { -webkit-user-select: text; user-select: text; }
+.content.stack-mode-on { padding-left: var(--space-6); }
+
+/* ── 缩略图：图贴在 ::before 层；加载前是柔和的灰底占位，不再是刺眼的白格 ──
+ * 淡入只在"画面静止时新到的图"上短暂播一次(.fade-in，播完即摘)：以前每张图常驻 opacity 过渡，
+ * 快速滑动时几十张同时淡入，每张都要单独合成，拖滚动条每帧 40~60ms(实测)。 */
+.photo-thumb { background: var(--surface); overflow: hidden; isolation: isolate; }
+.photo-thumb::before {
+  content: ''; position: absolute; inset: 0; z-index: 0;
+  background-image: var(--img, none); background-size: cover; background-position: center;
+  opacity: 0;
+}
+.photo-thumb.is-loaded::before { opacity: 1; }
+.photo-thumb.fade-in::before { animation: sg-thumb-in 240ms ease-out; }
+@keyframes sg-thumb-in { from { opacity: 0; } }
+/* 卡片上的勾选圈/角标不用毛玻璃：每个 backdrop-filter 都是一个独立合成层，一屏几百张卡就是
+ * 几百层，滚动和图片加载时每帧都要重排这些层(卡顿主因)。换成实色半透明，观感几乎一样 */
+.photo-check, .stack-count-badge, .burst-badge, .stack-badge-burst, .stack-badge-similar {
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+.photo-check { background: rgba(0, 0, 0, 0.32); }
+/* 网格缩略图跟着用户的旋转走(以前只有全屏里转了，网格还是歪的) */
+.photo-thumb[data-rot="90"]::before, .photo-thumb[data-rot="270"]::before {
+  inset: auto; left: 16.6667%; top: -25%; width: 66.6667%; height: 150%;
+}
+.photo-thumb[data-rot="90"]::before { transform: rotate(90deg); }
+.photo-thumb[data-rot="180"]::before { transform: rotate(180deg); }
+.photo-thumb[data-rot="270"]::before { transform: rotate(270deg); }
+/* 未加载时是静态的柔和灰底(不做流光动画：冷启动的大图库里会有上千个占位，逐帧动画太费) */
+.photo-thumb:not(.is-loaded):not(.is-failed) {
+  background: linear-gradient(180deg, var(--ph-b), var(--ph-a)) var(--surface);
+}
+.photo-thumb.is-failed::after {
+  content: '无法预览'; position: absolute; inset: 0; z-index: 0;
+  display: grid; place-items: center; font-size: 11px; color: var(--meta);
+}
+.photo-thumb > * { z-index: 1; }
+
+/* ── 卡片：弹簧手感(按下微缩、松开回弹)，选中=抬起+实心勾 ── */
+.photo-card {
+  transition: transform 460ms var(--spring-bouncy), box-shadow 280ms ease, border-color 220ms ease;
+}
+.photo-card:hover { transform: translateY(-2px); }
+.photo-card:active { transform: scale(0.965); transition: transform 110ms cubic-bezier(0.3, 0, 0.5, 1); }
+.photo-card.selected { transform: translateY(-4px); }
+.photo-card.selected:active { transform: translateY(-4px) scale(0.965); }
+.photo-check { transition: background 160ms ease, border-color 160ms ease, transform 420ms var(--spring-bouncy), opacity 160ms ease; }
+.photo-card.selected .photo-check { transform: scale(1.08); }
+.photo-card .tier-tag { transition: background 220ms ease, color 220ms ease; }
+
+/* ── 分组：按天成组，组头吸顶，日期旁有整组勾选圈 ──
+ * 组头和工具栏是同一块"顶栏"：没吸住时是实底(与页面同色，看不出边)；吸住后变成与工具栏同色的
+ * 毛玻璃，底下一条细线(工具栏自己的分隔线去掉)，看起来就是顶栏往下长出来的一截，而不是贴纸。
+ * 只有吸住的那一个开毛玻璃(拍摄天数多时几十个组头都开模糊也是几十个合成层)。 */
+.toolbar { border-bottom-color: transparent; z-index: 20; }   /* 工具栏(含"一键全选"下拉)永远在吸顶组头之上 */
+.day-group + .day-group { margin-top: 18px; }
+.group-header {
+  position: sticky; top: 0; z-index: 4;
+  margin: 0 calc(-1 * var(--space-6)) 8px; padding: 12px var(--space-6) 10px;
+  display: flex; align-items: center; gap: 10px;
+  background: var(--bg);
+  transition: box-shadow 200ms ease, background-color 200ms ease;
+}
+.group-header.is-stuck {
+  background: color-mix(in oklab, var(--bg) 92%, transparent);
+  backdrop-filter: saturate(1.4) blur(24px); -webkit-backdrop-filter: saturate(1.4) blur(24px);
+  box-shadow: 0 1px 0 var(--border);
+}
+.group-header h3 { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+.group-header .group-sub { font-size: 12.5px; color: var(--muted); }
+.group-header .group-count { margin-left: 2px; }
+.group-check {
+  position: relative; flex: none; width: 22px; height: 22px; padding: 0; border-radius: 50%;
+  border: 1.5px solid color-mix(in oklab, var(--fg), transparent 68%); background: transparent;
+  display: grid; place-items: center; color: var(--accent-on); cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, transform 420ms var(--spring-bouncy);
+}
+.group-check svg { width: 12px; height: 12px; opacity: 0; transition: opacity 120ms ease; }
+.group-check:hover { border-color: var(--accent); transform: scale(1.1); }
+.group-check:active { transform: scale(0.92); transition-duration: 90ms; }
+.group-check.is-all { background: var(--accent); border-color: var(--accent); }
+.group-check.is-all svg { opacity: 1; }
+.group-check.is-some { border-color: var(--accent); background: color-mix(in oklab, var(--accent), transparent 82%); }
+.group-check.is-some::after {
+  content: ''; position: absolute; left: 50%; top: 50%; width: 9px; height: 2px; border-radius: 1px;
+  transform: translate(-50%, -50%); background: var(--accent);
+}
+
+/* 选择模式：有选中时其余照片也露出勾选圈(提示"现在点照片=加选") */
+.content.has-selection .photo-card[data-id]:not(.selected) .photo-check { background: rgba(0,0,0,0.22); }
+
+/* ── 堆叠(折叠的相似照片) ── */
+.stack-layer { transition: transform 420ms var(--spring-bouncy); }
+.stack-card .stack-check { cursor: pointer; padding: 0; }
+.stack-card .stack-check svg { width: 12px; height: 12px; color: var(--accent-on); opacity: 0; }
+.stack-card.selected .stack-check, .stack-card.partial .stack-check { background: var(--accent); border-color: var(--accent); }
+.stack-card.selected .stack-check svg { opacity: 1; }
+.stack-card.partial .stack-check::after {
+  content: ''; position: absolute; left: 50%; top: 50%; width: 8px; height: 2px; border-radius: 1px;
+  transform: translate(-50%, -50%); background: var(--accent-on);
+}
+.stack-card.selected .stack-card-thumb, .stack-card.partial .stack-card-thumb { transform: translateY(-4px); box-shadow: 0 18px 38px rgba(0,0,0,0.24); }
+.stack-count-badge {
+  left: auto; right: 8px; display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11.5px; padding: 3px 8px 3px 7px;
+}
+.stack-count-badge svg { width: 12px; height: 12px; }
+/* 展开后的成员卡：外圈一道淡蓝光环，一眼看出"这几张是一组" */
+.stack-cell { box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent), transparent 72%); }
+.stack-cell .photo-thumb { box-shadow: none; }
+.stack-cell.is-keep .photo-thumb { box-shadow: none; }
+.stack-cell.selected { box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent), transparent 55%), 0 18px 38px rgba(0,0,0,0.24); }
+
+/* 收起/删除时的"鬼影"层(在滚动容器里，跟着滚、被裁剪，不会盖到工具栏) */
+.sg-ghost-layer { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: visible; pointer-events: none; z-index: 6; }
+.sg-ghost { pointer-events: none; transition: none !important; }
+
+/* ── 空状态 ── */
+.empty-state { max-width: 420px; margin: 12vh auto 0; text-align: center; color: var(--muted); animation: sg-rise 520ms var(--spring-smooth) both; }
+.empty-state .empty-icon { width: 54px; height: 54px; margin: 0 auto 14px; border-radius: 16px; display: grid; place-items: center; background: color-mix(in oklab, var(--accent), transparent 88%); color: var(--accent); }
+.empty-state .empty-icon svg { width: 26px; height: 26px; }
+.empty-state h3 { margin: 0 0 6px; font-size: 17px; color: var(--fg); font-weight: 650; }
+.empty-state p { margin: 0; font-size: 13px; line-height: 1.7; }
+@keyframes sg-rise { from { opacity: 0; transform: translateY(10px); } }
+
+/* ── 底部浮动选择栏(选中照片后出现，替代原工具栏里的删除/对比/取消按钮) ──
+ * "液态玻璃"浮层(苹果 2025 年起的材质)：浅色模式下仍是浅色、和整体同一调子，但靠三样东西一眼
+ * 跳出来——① 顶边一道高光 + 外圈一根发丝描边，像一块浮起来的玻璃；② 底下两层柔和投影，明显悬空；
+ * ③ 最左边蓝色实心的"已选 N 张"计数药丸(主题色)。深色模式是抬高的深灰玻璃。
+ * 顶部进度胶囊、拖动时的日期标签用同一套材质。 */
+:root {
+  --hud-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(248, 248, 250, 0.66));
+  --hud-fg: #1d1d1f; --hud-sub: rgba(60, 60, 67, 0.62); --hud-line: rgba(60, 60, 67, 0.16);
+  --hud-hover: rgba(0, 0, 0, 0.06); --hud-danger: var(--danger);
+  --hud-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), inset 0 -1px 0 rgba(0, 0, 0, 0.035),
+    0 0 0 0.5px rgba(0, 0, 0, 0.16), 0 8px 22px -6px rgba(0, 0, 0, 0.20), 0 22px 54px -14px rgba(0, 0, 0, 0.22);
+  --hud-blur: blur(28px) saturate(2) brightness(1.04);
+}
+:root[data-theme="dark"] {
+  --hud-bg: linear-gradient(180deg, rgba(64, 64, 68, 0.80), rgba(44, 44, 47, 0.74));
+  --hud-fg: #f5f5f7; --hud-sub: rgba(235, 235, 245, 0.6); --hud-line: rgba(255, 255, 255, 0.14);
+  --hud-hover: rgba(255, 255, 255, 0.10); --hud-danger: #ff6961;
+  --hud-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 0 0 0.5px rgba(255, 255, 255, 0.14),
+    0 10px 26px -6px rgba(0, 0, 0, 0.55), 0 24px 60px -14px rgba(0, 0, 0, 0.6);
+  --hud-blur: blur(28px) saturate(1.6);
+}
+.main { position: relative; }
+.sel-bar {
+  position: absolute; left: 50%; bottom: 22px; z-index: 30;
+  display: flex; align-items: center; gap: 4px; padding: 6px 6px 6px 7px;
+  border-radius: 20px; background: var(--hud-bg); color: var(--hud-fg);
+  backdrop-filter: var(--hud-blur); -webkit-backdrop-filter: var(--hud-blur);
+  box-shadow: var(--hud-shadow);
+  transform: translate(-50%, 30px) scale(0.94); opacity: 0; pointer-events: none;
+  transition: opacity 180ms ease, transform 540ms var(--spring-bouncy);
+  white-space: nowrap;
+}
+.sel-bar.show { transform: translate(-50%, 0) scale(1); opacity: 1; pointer-events: auto; }
+.sel-bar-count { font-size: 13px; color: var(--hud-sub); padding: 0 8px 0 2px; display: inline-flex; align-items: center; gap: 6px; }
+/* 计数药丸：主题蓝实心，数字变化时弹一下(见 refreshSelectionBar) */
+.sel-bar-count b {
+  display: inline-block; min-width: 24px; padding: 2px 8px; border-radius: 999px; text-align: center;
+  background: var(--accent); color: #fff; font-family: var(--font-mono); font-weight: 700; font-size: 12.5px;
+  box-shadow: 0 2px 8px color-mix(in oklab, var(--accent), transparent 60%);
+}
+.sel-bar-sep { width: 1px; height: 22px; background: var(--hud-line); margin: 0 4px; }
+.sel-bar-label { font-size: 12px; color: var(--hud-sub); margin: 0 2px 0 4px; }
+.sel-bar-btn {
+  border: none; background: transparent; color: var(--hud-fg); font-size: 13px; font-weight: 500;
+  padding: 7px 11px; border-radius: 11px; display: inline-flex; align-items: center; gap: 6px;
+  transition: background 140ms ease, transform 360ms var(--spring-bouncy), opacity 140ms ease;
+}
+.sel-bar-btn:hover { background: var(--hud-hover); }
+.sel-bar-btn:active { transform: scale(0.93); transition-duration: 90ms; }
+.sel-bar-btn:disabled { opacity: 0.35; pointer-events: none; }
+.sel-bar-btn svg { width: 15px; height: 15px; }
+.sel-bar-btn .dot { width: 8px; height: 8px; border-radius: 50%; }
+.sel-bar-btn .dot.bad { background: var(--danger); }
+.sel-bar-btn .dot.fix { background: var(--warn); }
+.sel-bar-btn .dot.good { background: var(--success); }
+.sel-bar-btn.sel-danger { color: var(--hud-danger); }
+.sel-bar-btn.sel-danger:hover { background: color-mix(in oklab, var(--danger), transparent 86%); }
+.sel-bar-btn.sel-bar-close { width: 32px; height: 32px; padding: 0; justify-content: center; border-radius: 50%; color: var(--hud-sub); }
+
+/* toast 跟选择栏同一中轴；选择栏出现时自动让到它上方 */
+.toast { bottom: 24px; transition: opacity 200ms ease, transform 520ms var(--spring-bouncy), bottom 460ms var(--spring-snappy); }
+.toast { transform: translate(-50%, 16px) scale(0.96); }
+.toast.show { transform: translate(-50%, 0) scale(1); }
+.app-window.has-selection .toast { bottom: 88px; }
+
+/* ── 顶部进度胶囊(导入/分析)：与选择栏同一套深色浮层，不再和底部提示/选择栏抢位置 ── */
+.sg-progress {
+  position: absolute; left: 50%; z-index: 31; min-width: 300px;
+  padding: 9px 14px 11px; border-radius: 14px; background: var(--hud-bg);
+  backdrop-filter: var(--hud-blur); -webkit-backdrop-filter: var(--hud-blur);
+  box-shadow: var(--hud-shadow);
+  font-size: 12.5px; color: var(--hud-fg);
+  transform: translate(-50%, -12px) scale(0.97); opacity: 0; pointer-events: none;
+  transition: opacity 200ms ease, transform 500ms var(--spring-snappy);
+}
+.sg-progress.show { transform: translate(-50%, 0) scale(1); opacity: 1; }
+.sg-progress .row { display: flex; justify-content: space-between; gap: 16px; }
+.sg-progress .num { font-family: var(--font-mono); color: var(--hud-sub); }
+.sg-progress .bar { height: 4px; border-radius: 2px; margin-top: 7px; overflow: hidden; background: var(--hud-line); }
+.sg-progress .bar > i { display: block; height: 100%; width: 0; border-radius: 2px; background: var(--accent); transition: width 360ms var(--spring-smooth); }
+
+/* ── 下拉菜单(机型筛选 / 一键全选档位)：弹簧展开 ── */
+.sg-menu, .split-btn-menu {
+  display: block; opacity: 0; pointer-events: none;
+  transform: translateY(-6px) scale(0.96); transform-origin: top right;
+  transition: opacity 140ms ease, transform 380ms var(--spring-snappy);
+}
+.sg-menu.open, .split-btn-menu.open { opacity: 1; pointer-events: auto; transform: none; }
+.sg-menu {
+  position: fixed; z-index: 80; min-width: 210px; max-height: 60vh; overflow-y: auto; padding: 6px;
+  border-radius: 12px; background: var(--glass); transform-origin: top left;
+  backdrop-filter: blur(24px) saturate(1.8); -webkit-backdrop-filter: blur(24px) saturate(1.8);
+  border: 1px solid var(--glass-line); box-shadow: 0 16px 44px rgba(0,0,0,0.2);
+}
+.sg-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; border: none; background: transparent;
+  text-align: left; padding: 7px 10px; border-radius: 8px; font-size: 13px; color: var(--fg); cursor: pointer;
+}
+.sg-menu-item:hover { background: color-mix(in oklab, var(--accent), transparent 86%); }
+.sg-menu-item .n { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--meta); }
+.sg-menu-item.selected { color: var(--accent); font-weight: 600; }
+.sg-menu-item.selected::before { content: '✓'; width: 12px; }
+.sg-menu-item:not(.selected)::before { content: ''; width: 12px; }
+
+/* ── 按钮/侧栏/分段控件：统一弹簧手感 ── */
+.btn { transition: background 150ms ease, border-color 150ms ease, opacity 150ms ease, box-shadow 220ms ease, transform 440ms var(--spring-bouncy); }
+.side-item { transition: background 160ms ease, color 160ms ease, transform 380ms var(--spring-bouncy); }
+.side-item:active { transform: scale(0.975); transition-duration: 80ms; }
+/* 文件夹行按住左滑删除：位移必须压过上面"按下微缩"的 transform——否则按住拖动时文件夹标签
+ * 钉在原地不动，盖住下面的红色删除区，只从边缘露出一点颜色(用户报的 bug) */
+.folder-swipe .folder-row:active { transform: translateX(var(--swipe-x, 0px)); }
+.folder-swipe.dragging .folder-row:active { transition: none; }
+/* 左滑删除：不再是整块红底被标签挡着露出来，而是一颗红色胶囊从标签后面挤出来(见 ux_folder.js)。
+ * 宽度/缩放由脚本里的弹簧逐帧写入；过 50%(.armed)时垃圾桶放大、桶盖掀开 */
+.folder-swipe-action, .folder-swipe-icon { display: none; }
+.folder-swipe .folder-row { z-index: 1; transition: transform 560ms var(--spring-bouncy); }
+.folder-swipe-pill {
+  position: absolute; right: 6px; top: 4px; bottom: 4px; width: 0; z-index: 0;
+  border-radius: 999px; overflow: hidden; display: grid; place-items: center;
+  background: linear-gradient(180deg, #ff6259, #e2352c); color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38), 0 4px 12px rgba(226, 53, 44, 0.32);
+  transform-origin: right center; opacity: 0; pointer-events: none; will-change: width, transform;
+}
+.folder-swipe-pill svg { width: 16px; height: 16px; flex: none; transition: transform 460ms var(--spring-bouncy); }
+.folder-swipe-pill .lid { transform-origin: 4px 7px; transition: transform 460ms var(--spring-bouncy); }
+.folder-swipe.armed .folder-swipe-pill svg { transform: scale(1.14); }
+.folder-swipe.armed .folder-swipe-pill .lid { transform: translate(-1px, -2.6px) rotate(-26deg); }
+.seg-thumb { transition: transform 540ms var(--spring-bouncy), width 540ms var(--spring-bouncy); }
+.theme-dip, #toolbar-stack-toggle { transition: box-shadow 460ms var(--spring-smooth), transform 460ms var(--spring-bouncy), background 200ms ease, color 200ms ease; }
+
+/* ── 弹窗：毛玻璃遮罩 + 弹簧出现/快速消失 ── */
+.modal-backdrop { backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); transition: opacity 220ms ease; }
+.modal-card { transition: transform 540ms var(--spring-bouncy), opacity 200ms ease; }
+.modal-backdrop.hidden .modal-card { transform: translateY(12px) scale(0.94); opacity: 0; }
+#close-modal { animation: sg-fade-in 200ms ease both; }
+#close-modal .modal-card { animation: sg-sheet-in 560ms var(--spring-bouncy) both; }
+#close-modal.closing { animation: sg-fade-out 170ms ease both; }
+#close-modal.closing .modal-card { animation: sg-sheet-out 170ms ease both; }
+@keyframes sg-fade-in { from { opacity: 0; } }
+@keyframes sg-fade-out { to { opacity: 0; } }
+@keyframes sg-sheet-in { from { opacity: 0; transform: translateY(14px) scale(0.93); } }
+@keyframes sg-sheet-out { to { opacity: 0; transform: scale(0.97); } }
+
+/* ── 全屏细看：从缩略图"放大飞出"、关闭时飞回；缩放跟手(滚轮按光标位置放大) ── */
+.fp-overlay { transition: opacity 280ms ease; }
+.fp-stage { transition: right 480ms var(--spring-snappy), transform 480ms var(--spring-snappy); }
+.fp-sidebar { transition: transform 480ms var(--spring-snappy); }
+.fp-image { transition: transform 480ms var(--spring-snappy); }
+.fp-image.fp-live { transition: none !important; }
+.fp-image.fp-loading { filter: none; }
+.fp-hero { position: fixed; z-index: 49; background-size: cover; background-position: center; pointer-events: none; will-change: transform, clip-path; }
+.fp-overlay.hero-flying .fp-image { opacity: 0; }
+.fp-overlay.hero-flying .fp-stage { transform: none; transition: right 480ms var(--spring-snappy); }
+.fp-icon-btn { transition: background 150ms ease, opacity 150ms ease, transform 380ms var(--spring-bouncy); }
+.fp-icon-btn:active { transform: scale(0.9); transition-duration: 90ms; }
+.fp-nav-btn:active { transform: translateY(-50%) scale(0.9); }
+
+/* ── 照片区滚动条：看得见、好抓 ──
+ * 以前是 10px 宽、15% 透明度的淡灰条，用户根本没发现右边能拖。现在是一根清楚的胶囊(两侧留透明边，
+ * 视觉 8px、可点区域 14px)，悬停/拖动时变粗变深；最短 44px，大图库里也抓得住。 */
+.content::-webkit-scrollbar { width: 14px; }
+.content::-webkit-scrollbar-track { background: transparent; }
+.content::-webkit-scrollbar-thumb {
+  min-height: 44px; border-radius: 7px; border: 3px solid transparent; background-clip: padding-box;
+  background-color: color-mix(in oklab, var(--fg), transparent 64%);
+}
+.content::-webkit-scrollbar-thumb:hover { border-width: 2px; background-color: color-mix(in oklab, var(--fg), transparent 48%); }
+.content::-webkit-scrollbar-thumb:active { border-width: 2px; background-color: color-mix(in oklab, var(--fg), transparent 36%); }
+/* ── 迷你密度(手机相册那样一屏几十上百张)：只留图，文件名/时间/档位字样都收起，档位看边框颜色 ── */
+[data-density="mini"] .grid { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 4px; }
+[data-density="mini"] .photo-card { border-width: 1.5px; border-radius: 7px; }
+[data-density="mini"] .photo-card:hover { transform: none; }
+[data-density="mini"] .photo-meta, [data-density="mini"] .photo-card .tier-tag { display: none; }
+[data-density="mini"] .photo-check { width: 16px; height: 16px; top: 4px; left: 4px; border-width: 1.5px; }
+[data-density="mini"] .photo-check svg { width: 9px; height: 9px; }
+[data-density="mini"] .photo-card:not(.selected):not(:hover) .photo-check { opacity: 0; }
+[data-density="mini"] .content.has-selection .photo-card .photo-check { opacity: 1; }
+[data-density="mini"] .stack-count-badge { top: 4px; right: 4px; font-size: 10px; padding: 1px 5px 1px 4px; gap: 2px; }
+[data-density="mini"] .stack-count-badge svg { width: 10px; height: 10px; }
+[data-density="mini"] .stack-cell .stack-keep-star { top: 3px; font-size: 10px; padding: 1px 6px; }
+[data-density="mini"] .stack-cell-del { width: 18px; height: 18px; bottom: 4px; right: 4px; font-size: 10px; }
+[data-density="mini"] .stack-cell { box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent), transparent 66%); }
+[data-density="mini"] .photo-card.selected { transform: none; }
+[data-density="mini"] .day-group + .day-group { margin-top: 12px; }
+
+
+/* 侧边栏存储卡剩余空间 */
+.card-space { margin: 6px 0; font-size: 11.5px; color: var(--muted); }
+.card-space .cs-row + .cs-row { margin-top: 6px; }
+.card-space .cs-bar { height: 3px; border-radius: 3px; margin-top: 3px; overflow: hidden;
+  background: color-mix(in oklab, var(--fg), transparent 90%); }
+.card-space .cs-fill { height: 100%; border-radius: 3px; background: var(--accent); }
+.card-space .cs-fill.low { background: var(--danger); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+}
+/* ── 时间刻度(见 ux_scroll.js)：鼠标移到右侧滚动条附近时出现。没有底板、不挡照片——
+ * 滚动条轨道里每个拍摄日期一个小圆点(拖到这里就是这一天)，旁边一列日期全部写出来，挤的地方
+ * 自动错开并用细线连回各自的圆点；日期是可以点的小胶囊，点了平滑滚到那一天。当前那天主题蓝。 ── */
+.sg-ruler {
+  position: absolute; right: 0; z-index: 32; width: 140px; pointer-events: none;
+  opacity: 0; transform: translateX(6px);
+  transition: opacity 200ms ease, transform 380ms var(--spring-snappy);
+}
+.sg-ruler.show { opacity: 1; transform: none; }
+.sg-ruler-links { position: absolute; left: 0; top: 0; overflow: visible; }
+.sg-ruler-links path { fill: none; stroke: color-mix(in oklab, var(--fg), transparent 70%); stroke-width: 1; }
+.sg-ruler-dot {
+  position: absolute; right: 5px; width: 4px; height: 4px; margin-top: -2px; border-radius: 50%;
+  background: color-mix(in oklab, var(--fg), transparent 55%);
+  transition: transform 260ms var(--spring-bouncy), background 160ms ease;
+}
+.sg-ruler-dot.current { background: var(--accent); transform: scale(1.7); }
+.sg-ruler-mark {
+  position: absolute; right: 20px; transform: translateY(-50%);
+  border: none; padding: 3px 8px; border-radius: 999px; cursor: pointer; pointer-events: none;
+  font: 600 11px/1.15 var(--font-body); letter-spacing: 0.01em; white-space: nowrap;
+  color: var(--fg-2);
+  background: color-mix(in oklab, var(--bg) 78%, transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(1.6); backdrop-filter: blur(10px) saturate(1.6);
+  box-shadow: 0 0 0 0.5px color-mix(in oklab, var(--fg), transparent 86%), 0 2px 8px rgba(0, 0, 0, 0.10);
+  transition: background 140ms ease, color 140ms ease, box-shadow 160ms ease;
+}
+.sg-ruler.show .sg-ruler-mark { pointer-events: auto; }
+.sg-ruler-mark:hover { background: color-mix(in oklab, var(--accent), transparent 84%); color: var(--accent); }
+.sg-ruler-mark.current { background: var(--accent); color: #fff; box-shadow: 0 2px 10px color-mix(in oklab, var(--accent), transparent 55%); }
 </style>
 </head>
 <body>
@@ -1180,13 +1557,11 @@ html.theme-transitioning #content * {
         </div>
         <button class="btn btn-sm" id="btn-filter">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
-          <span id="filter-label">筛选 · 全部机型</span>
+          <span id="filter-label">全部机型</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:11px;height:11px;margin-left:-2px;"><path d="M6 9l6 6 6-6"/></svg>
         </button>
-        <div class="segmented" id="view-toggle" data-od-id="view-toggle">
-          <button class="seg-item active" data-view="time">时间视图</button>
-          <button class="seg-item" data-view="category">分类视图</button>
-        </div>
         <div class="segmented" id="density-toggle" data-od-id="density-toggle">
+          <button class="seg-item" data-density="mini" title="一屏几十上百张，像手机相册 (Ctrl+滚轮 / Ctrl+加减号 缩放网格)">迷你</button>
           <button class="seg-item" data-density="compact">紧凑</button>
           <button class="seg-item active" data-density="comfortable">标准</button>
           <button class="seg-item" data-density="large">大图</button>
@@ -1208,18 +1583,30 @@ html.theme-transitioning #content * {
             <button class="split-btn-menu-item" data-tier="good">精选</button>
           </div>
         </div>
-        <button class="btn btn-sm" id="btn-clear-sel" style="display:none;">取消选择（<span id="clear-sel-count">0</span>）</button>
-        <button class="btn btn-sm" id="btn-compare">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="7" height="14" rx="1"/><rect x="14" y="5" width="7" height="14" rx="1"/></svg>
-          对比模式
-        </button>
-        <button class="btn btn-danger btn-sm" id="btn-delete" disabled>删除已选（<span id="sel-count">0</span>）</button>
         <button class="theme-dip" id="btn-theme" aria-pressed="false" aria-label="切换深色/浅色">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" id="theme-icon"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
         </button>
       </div>
 
       <div class="content" id="content" data-od-id="gallery-grid"></div>
+      <div class="sel-bar" id="sel-bar" role="toolbar" aria-label="已选照片操作" aria-hidden="true">
+        <button class="sel-bar-btn sel-bar-close" id="sel-clear" title="取消选择 (Esc)" aria-label="取消选择">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+        <span class="sel-bar-count">已选 <b id="sel-num">0</b> 张</span>
+        <span class="sel-bar-sep"></span>
+        <span class="sel-bar-label">标为</span>
+        <button class="sel-bar-btn" data-set-tier="bad" title="标为废片 (1)"><i class="dot bad"></i>废片</button>
+        <button class="sel-bar-btn" data-set-tier="fix" title="标为可修 (2)"><i class="dot fix"></i>可修</button>
+        <button class="sel-bar-btn" data-set-tier="good" title="标为精选 (3)"><i class="dot good"></i>精选</button>
+        <span class="sel-bar-sep"></span>
+        <button class="sel-bar-btn" id="sel-compare" title="同屏对比所选照片">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="7" height="14" rx="1"/><rect x="14" y="5" width="7" height="14" rx="1"/></svg>对比
+        </button>
+        <button class="sel-bar-btn sel-danger" id="sel-delete" title="删除所选 (Delete)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2m-9 0 1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/></svg>删除
+        </button>
+      </div>
     </section>
   </div>
 
@@ -1313,15 +1700,15 @@ html.theme-transitioning #content * {
       </div>
       <div class="panel-body">
         <div class="panel-section">
-          <h4>过曝 / 欠曝标注</h4>
+          <h4>高光 / 阴影修剪</h4>
           <div class="expo-toggle-row" style="margin-top:0;">
             <div class="legend">
-              <span class="legend-chip"><span class="legend-dot" style="background:var(--danger)"></span>过曝区域</span>
-              <span class="legend-chip"><span class="legend-dot" style="background:var(--chan-b)"></span>欠曝区域</span>
+              <span class="legend-chip"><span class="legend-dot" style="background:var(--danger)"></span>高光修剪</span><span class="legend-chip"><span class="legend-dot" style="background:#ffb020"></span>部分通道饱和</span>
+              <span class="legend-chip"><span class="legend-dot" style="background:var(--chan-b)"></span>阴影修剪</span>
             </div>
-            <button class="switch" id="expo-switch" aria-label="显示过曝/欠曝区域"></button>
+            <button class="switch" id="expo-switch" aria-label="显示高光/阴影修剪区域"></button>
           </div>
-          <p class="tier-auto-note" id="expo-note">开启后在大图上高亮标注过曝 / 欠曝像素区域。</p>
+          <p class="tier-auto-note" id="expo-note">开启后在大图上标出细节已经丢失的高光修剪 / 阴影修剪区域。</p>
         </div>
 
         <div class="panel-section">
@@ -1473,6 +1860,361 @@ html.theme-transitioning #content * {
   const el = (sel) => document.querySelector(sel);
   const contentEl = el('#content');
 
+  // ══════════ 2026-10 体验大修：动效 / 缩略图加载 / 布局动画 基础设施 ══════════
+  // 弹簧曲线(与样式表 --spring-* 同源)：snappy=干脆几乎不过冲，bouncy=发牌/弹出的轻微回弹，
+  // smooth=临界阻尼无过冲(收拢、淡出)。用 Web Animations 播放；不支持 linear() 的内核自动退回贝塞尔。
+  const SPRING = {
+    snappy: { duration: 443, easing: 'linear(0, 0.0132, 0.0478, 0.0976, 0.1575, 0.2233, 0.2919, 0.3608, 0.4284, 0.4931, 0.5541, 0.6108, 0.6629, 0.7102, 0.7528, 0.7908, 0.8244, 0.8538, 0.8795, 0.9016, 0.9206, 0.9368, 0.9504, 0.9618, 0.9713, 0.9791, 0.9854, 0.9905, 0.9946, 0.9977, 1.0001, 1.0019, 1.0032, 1.0041, 1.0046, 1.0049, 1.005, 1.005, 1.0048, 1.0046, 1.0043, 1.0039, 1.0036, 1.0032, 1.0029, 1.0026, 1.0023, 1.002, 1)' },
+    bouncy: { duration: 535, easing: 'linear(0, 0.0117, 0.0434, 0.0902, 0.1479, 0.2131, 0.2827, 0.3542, 0.4257, 0.4955, 0.5625, 0.6255, 0.6842, 0.7379, 0.7866, 0.8301, 0.8686, 0.9021, 0.931, 0.9555, 0.976, 0.9929, 1.0064, 1.017, 1.0251, 1.031, 1.0349, 1.0373, 1.0383, 1.0383, 1.0374, 1.0358, 1.0338, 1.0314, 1.0288, 1.026, 1.0233, 1.0206, 1.0179, 1.0154, 1.0131, 1.011, 1.009, 1.0072, 1.0057, 1.0043, 1.0031, 1.0021, 1)' },
+    smooth: { duration: 495, easing: 'linear(0, 0.0144, 0.0511, 0.1024, 0.1625, 0.2272, 0.2932, 0.3585, 0.4214, 0.4809, 0.5366, 0.588, 0.635, 0.6777, 0.7162, 0.7508, 0.7817, 0.8092, 0.8335, 0.855, 0.8739, 0.8906, 0.9051, 0.9179, 0.929, 0.9387, 0.9471, 0.9544, 0.9607, 0.9662, 0.971, 0.975, 0.9786, 0.9816, 0.9843, 0.9865, 0.9885, 0.9901, 0.9916, 0.9928, 0.9938, 0.9947, 0.9955, 0.9962, 0.9967, 0.9972, 0.9976, 0.998, 1)' },
+  };
+  const REDUCED_MOTION = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  function sgAnimate(node, frames, preset, extra) {
+    if (!node || !node.animate) return null;
+    const opts = Object.assign({ duration: preset.duration, easing: preset.easing }, extra || {});
+    if (REDUCED_MOTION) { opts.duration = 1; opts.delay = 0; }
+    try { return node.animate(frames, opts); }
+    catch (e) {
+      try { opts.easing = 'cubic-bezier(0.22, 1, 0.36, 1)'; return node.animate(frames, opts); }
+      catch (e2) { return null; }
+    }
+  }
+  // 界面偏好：改动时写回后端 prefs.json(pywebview 每次启动是全新无痕配置，localStorage 跨启动
+  // 留不住)，启动时 app.py 写出 prefs.js 让首帧就拿到。读取先看本会话的 localStorage(本会话里
+  // 最新的改动，页面若被重载也不会退回启动时的旧值)，没有再用 prefs.js 的启动值。
+  const sgPrefs = {
+    _v: Object.assign({}, window.__sgPrefs || {}),
+    getItem(k) {
+      try { const s = window.localStorage.getItem(k); if (s != null) return s; } catch (e) {}
+      return Object.prototype.hasOwnProperty.call(this._v, k) ? this._v[k] : null;
+    },
+    setItem(k, v) {
+      const s = String(v);
+      if (this.getItem(k) === s) return;
+      this._v[k] = s;
+      try { window.localStorage.setItem(k, s); } catch (e) {}
+      try { if (window.pywebview && window.pywebview.api && window.pywebview.api.set_pref) window.pywebview.api.set_pref(k, s); } catch (e) {}
+    },
+  };
+  // 整页重绘(render)之后要跑的收尾(吸顶状态等)：后面的模块往里登记
+  const afterRenderHooks = [];
+  function sgEsc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+  const CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path transform="translate(-1.3,0)" d="M4 12l6 6L20 6"/></svg>';
+  const LAYERS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="3" width="14" height="14" rx="2.5"/><path d="M3 8v10a3 3 0 0 0 3 3h10"/></svg>';
+
+  // ── 缩略图加载引擎 ─────────────────────────────────────────────
+  // 以前：每次重绘都把所有缩略图清空、等懒加载重新挂上(展开/收起堆叠时整屏闪白)；浏览器还会
+  // 排队去要已经划走的图，把眼前要看的挤在后面(快速滑动大片空白)。
+  // 现在：① 本会话解码过的图记在 thumbLoaded，重绘时直接贴上，不闪；② 进入"视口±1.2屏"的才
+  // 列入待加载，按离视口中心的距离排优先级，最多同时 6 张(=浏览器对同一主机的并发上限)，划走
+  // 还没开始的直接作废；③ 解码完成才贴图并淡入，不会出现"一半一半刷出来"。
+  const thumbLoaded = new Set();
+  // 失败记时间、过期重试：浏览时拔卡又插回，图要能重新出来(不能本会话永久判死)
+  const thumbFailed = new Map();   // url → 失败时刻
+  const THUMB_RETRY_MS = 15000;
+  function isThumbFailed(url) {
+    const t = thumbFailed.get(url);
+    if (t == null) return false;
+    if (performance.now() - t > THUMB_RETRY_MS) { thumbFailed.delete(url); return false; }
+    return true;
+  }
+  const thumbDims = new Map();     // url → [宽, 高]：全屏"从缩略图飞出"要用真实宽高比
+  // 眼前(视口±1.2屏)还没出图的格子 → 它要的地址。格子出图/离开范围才移出(加载中也留着，
+  // 这样才知道哪些在途请求已经"没人要了"，可以撤掉给眼前的让路)
+  const thumbWanted = new Map();
+  const thumbJobs = new Map();     // url → { img, spec(预取), aborted, unwantedSince }：在途请求
+  const THUMB_MAX = 6;             // 同时在途上限(=浏览器对同一主机的并发连接数)
+  let thumbActive = 0;
+  // 淡入只给"画面静止时新到的图"、同时最多十几张：滚动中到的图直接出现(手机相册也是这样)。
+  // 每个正在淡入的图都要单独合成，快速滑动时几十张一起淡入会把每帧拖到 40ms 以上。
+  let thumbFading = 0;
+  const THUMB_FADE_MAX = 16;
+  function thumbPaint(node, url, fade) {
+    node.style.setProperty('--img', `url("${url}")`);
+    node._painted = url;
+    if (fade && thumbFading < THUMB_FADE_MAX && performance.now() - scrollLastT > 180 && !node.classList.contains('is-loaded')) {
+      thumbFading++;
+      node.classList.add('fade-in');
+      setTimeout(() => { node.classList.remove('fade-in'); thumbFading--; }, 260);
+    }
+    node.classList.add('is-loaded');
+    node.classList.remove('is-failed');
+    if (node.dataset.thumb === url) {
+      node.removeAttribute('data-thumb');
+      thumbIO.unobserve(node);
+      thumbWanted.delete(node);
+    }
+  }
+  // 发起一个请求。撤掉(abort)的请求不算失败：格子回到"想要"状态，之后照常再要
+  function thumbStart(url, spec) {
+    const img = new Image();
+    img.decoding = 'async';
+    const job = { img, spec: !!spec, aborted: false, unwantedSince: 0 };
+    thumbJobs.set(url, job);
+    thumbActive++;
+    img.src = url;
+    img.decode().then(() => 'ok', () => (img.complete && img.naturalWidth > 0 ? 'ok' : 'fail')).then(res => {
+      if (job.aborted) return;   // 撤掉时已经把名额还回去了
+      thumbJobs.delete(url);
+      thumbActive--;
+      if (res === 'ok') { thumbLoaded.add(url); thumbFailed.delete(url); thumbDims.set(url, [img.naturalWidth, img.naturalHeight]); }
+      else if (res === 'fail') thumbFailed.set(url, performance.now());
+      thumbSettle(url, res === 'ok');
+      thumbPump();
+    });
+  }
+  function thumbAbort(url) {
+    const j = thumbJobs.get(url);
+    if (!j || j.aborted) return;
+    j.aborted = true;
+    // 名额当场还回去(不等浏览器回报——换掉 src 后 decode() 未必会结束，等它就会漏名额、越撤越堵)
+    thumbJobs.delete(url);
+    thumbActive--;
+    j.img.src = '';   // 浏览器立刻断开这个请求，连接让给眼前要看的图
+  }
+  function thumbSettle(url, ok) {
+    contentEl.querySelectorAll('.photo-thumb[data-thumb]').forEach(n => {
+      if (n.dataset.thumb !== url) return;
+      thumbWanted.delete(n);
+      if (ok) thumbPaint(n, url, true);
+      else {
+        // 已用另一档的图垫着就保留它，不盖上"无法预览"
+        if (!n.classList.contains('is-loaded')) n.classList.add('is-failed');
+        n.removeAttribute('data-thumb');
+        thumbIO.unobserve(n);
+      }
+    });
+  }
+  // 低优先级预取：鼠标停在折叠堆上/屏幕上的折叠堆，把它们藏着的成员图先取好——一展开就有图；
+  // 快速划过、没来得及加载的也记在这里，眼前的都出图后再补。眼前有图要加载时，预取会被让掉。
+  const thumbPre = [];
+  function thumbPrefetch(urls, urgent) {
+    const fresh = (urls || []).filter(u => u && !thumbLoaded.has(u) && !isThumbFailed(u)
+      && !thumbJobs.has(u) && !thumbPre.includes(u));
+    if (urgent) thumbPre.unshift(...fresh); else thumbPre.push(...fresh);
+    thumbPump();
+  }
+  // 滚动方向/速度：快速往下甩时优先加载"即将进入屏幕"的(视口下方)，刚离开上沿的往后放
+  let scrollVel = 0, scrollLastTop = 0, scrollLastT = 0;
+  let thumbPumpTimer = 0;
+  contentEl.addEventListener('scroll', () => {
+    const now = performance.now();
+    const st = contentEl.scrollTop;
+    const v = (st - scrollLastTop) / Math.max(8, now - scrollLastT);   // px/ms
+    scrollVel = scrollVel * 0.5 + v * 0.5;
+    scrollLastTop = st;
+    scrollLastT = now;
+    // 停下来的那一刻立刻按新位置排一次(拖滚动条停住后不一定还有可见性变化来触发)
+    clearTimeout(thumbPumpTimer);
+    thumbPumpTimer = setTimeout(thumbPump, 150);
+  }, { passive: true });
+  let thumbFpEl = null;
+  // 调度：眼前的永远最先。① 看大图时网格整体让路；② 拖滚动条/猛甩的那一瞬间路过的格子不值得开始
+  // 加载，停下再说；③ 按离"视线焦点"的距离排序，前几名没在加载的立刻开始；④ 在途请求里已经没人要
+  // 的(划走了 0.2 秒以上)或只是预取的，直接撤掉，把连接让给眼前的——以前划到一片空白处停住，连接
+  // 全被刚才路过那段的请求占着，后端也还在按旧位置生成，眼前的就一直等。
+  function thumbPump() {
+    if (!thumbFpEl) thumbFpEl = document.getElementById('fp-overlay');
+    if (thumbFpEl && thumbFpEl.classList.contains('open')) return;
+    const now = performance.now();
+    const moving = now - scrollLastT < 140;
+    const vel = moving ? scrollVel : 0;
+    if (moving && Math.abs(vel) > 3.5) return;   // 停下 150ms 后滚动监听会再叫一次
+    const cr = contentEl.getBoundingClientRect();
+    const lead = Math.max(-0.9, Math.min(0.9, vel * 400 / Math.max(1, cr.height)));   // 预判 0.4 秒后的位置
+    const focus = cr.top + cr.height * (0.4 + lead);
+    const cand = [];
+    thumbWanted.forEach((url, node) => {
+      if (!node.isConnected || node.dataset.thumb !== url) { thumbWanted.delete(node); return; }
+      if (thumbLoaded.has(url)) { thumbPaint(node, url, false); return; }
+      if (isThumbFailed(url)) { thumbSettle(url, false); return; }
+      const r = node.getBoundingClientRect();
+      const mid = (r.top + r.bottom) / 2;
+      const leaving = (vel > 0.3 && r.bottom < cr.top) || (vel < -0.3 && r.top > cr.bottom);
+      cand.push([Math.abs(mid - focus) + (leaving ? cr.height * 3 : 0), url]);
+    });
+    cand.sort((a, b) => a[0] - b[0]);
+    const ranked = [];
+    const seen = new Set();
+    for (const [, url] of cand) if (!seen.has(url)) { seen.add(url); ranked.push(url); }
+    const top = new Set(ranked.slice(0, THUMB_MAX * 2));
+    // 撤掉没人要的/预取的在途请求(给眼前排着队的让位)
+    const waiting = ranked.slice(0, THUMB_MAX).filter(u => !thumbJobs.has(u)).length;
+    let recheck = false;
+    thumbJobs.forEach((j, url) => {
+      if (j.aborted) return;
+      if (top.has(url)) { j.unwantedSince = 0; j.spec = false; return; }
+      if (j.spec) { if (waiting > 0) { thumbAbort(url); thumbPre.unshift(url); } return; }
+      if (!j.unwantedSince) { j.unwantedSince = now; recheck = true; }
+      else if (now - j.unwantedSince > 200) thumbAbort(url);
+      else recheck = true;
+    });
+    if (recheck) { clearTimeout(thumbPumpTimer); thumbPumpTimer = setTimeout(thumbPump, 220); }
+    for (const url of ranked) {
+      if (thumbActive >= THUMB_MAX) break;
+      if (!thumbJobs.has(url)) thumbStart(url, false);
+    }
+    // 眼前的都在加载/加载完了，才轮到预取
+    if (!ranked.some(u => !thumbJobs.has(u))) {
+      while (thumbActive < THUMB_MAX && thumbPre.length) {
+        const u = thumbPre.shift();
+        if (thumbLoaded.has(u) || isThumbFailed(u) || thumbJobs.has(u)) continue;
+        thumbStart(u, true);
+      }
+    }
+  }
+  const thumbIO = new IntersectionObserver(entries => {
+    entries.forEach(en => {
+      const node = en.target;
+      const url = node.dataset.thumb;
+      if (!url) { thumbIO.unobserve(node); return; }
+      if (en.isIntersecting) thumbWanted.set(node, url);
+      else if (thumbWanted.delete(node)) {
+        // 一闪而过还没加载的：记进低优先级队列，眼前的都出图后再补——往回翻时就不再是空白
+        if (!thumbPre.includes(url)) { thumbPre.push(url); if (thumbPre.length > 400) thumbPre.shift(); }   // 迷你密度一屏就上百张
+      }
+    });
+    thumbPump();
+  }, { root: contentEl, rootMargin: '120% 0px' });
+  function thumbAttach(root) {
+    const nodes = root.matches && root.matches('.photo-thumb[data-thumb]')
+      ? [root] : Array.from(root.querySelectorAll('.photo-thumb[data-thumb]'));
+    nodes.forEach(node => {
+      const url = node.dataset.thumb;
+      if (!url) { node.classList.add('is-failed'); return; }
+      if (thumbLoaded.has(url)) { thumbPaint(node, url, false); return; }
+      // 另一档(大/小)已经解码过：先垫上，等这一档到了再无缝换(切换密度时不出现空白)
+      const alt = node.dataset.alt;
+      if (alt && thumbLoaded.has(alt) && node._painted !== alt) thumbPaint(node, alt, false);
+      if (isThumbFailed(url)) {
+        if (!node.classList.contains('is-loaded')) node.classList.add('is-failed');
+        node.removeAttribute('data-thumb');
+      } else thumbIO.observe(node);
+    });
+  }
+  function thumbReset() { thumbIO.disconnect(); thumbWanted.clear(); }
+
+  // 网格缩略图分两档：512 与 256。小格子(迷你/紧凑、普通屏的标准密度)用 256——解码快约 4 倍、
+  // 占内存少 4 倍，一屏上百张、快速滑动也跟得上；大格子/高分屏用 512 保证清晰。
+  let thumbTier = 512;
+  function thumbUrlFor(p, tier) {
+    const u = (p && p.thumbnail) || '';
+    return (tier || thumbTier) === 256 ? u.replace('/thumb_cache/', '/thumb256_cache/') : u;
+  }
+  function pickThumbTier() {
+    if (!contentEl.clientWidth) return thumbTier;   // 窗口最小化/在托盘里：量不到宽度，保持原档
+    const d = document.documentElement.getAttribute('data-density') || 'comfortable';
+    const minCol = { mini: 84, compact: 120, comfortable: 168, large: 260 }[d] || 168;
+    const gap = d === 'mini' ? 4 : d === 'compact' ? 12 : 16;
+    const w = Math.max(200, contentEl.clientWidth - 48);
+    const cols = Math.max(1, Math.floor((w + gap) / (minCol + gap)));
+    const cell = (w - (cols - 1) * gap) / cols;
+    thumbTier = cell * (window.devicePixelRatio || 1) <= 270 ? 256 : 512;
+    return thumbTier;
+  }
+  // 密度/窗口宽度变了导致该用另一档：就地换地址(已解码的另一档先垫着)，不整页重绘
+  function retierThumbs() {
+    const before = thumbTier;
+    if (pickThumbTier() === before) return;
+    thumbReset();
+    const other = thumbTier === 256 ? 512 : 256;
+    contentEl.querySelectorAll('.photo-thumb').forEach(node => {
+      const card = node.closest('[data-id], [data-cover]');
+      if (!card || card.closest('.sg-ghost')) return;
+      const p = PHOTO_BY_ID.get(Number(card.dataset.id || card.dataset.cover));
+      if (!p) return;
+      const url = thumbUrlFor(p);
+      node.dataset.alt = thumbUrlFor(p, other);
+      if (node._painted === url) { node.removeAttribute('data-thumb'); return; }
+      node.dataset.thumb = url;
+    });
+    thumbAttach(contentEl);
+  }
+
+  // ── 布局动画(FLIP)：只量/只动视口附近的元素，上千张的图库也不卡 ──────────────
+  const FLIP_MARGIN = 220;
+  function inView(r, cr, margin) { return r.bottom >= cr.top - margin && r.top <= cr.bottom + margin; }
+  function captureLayout() {
+    const cr = contentEl.getBoundingClientRect();
+    const m = new Map();
+    contentEl.querySelectorAll('[data-key]').forEach(n => {
+      const r = n.getBoundingClientRect();
+      if (inView(r, cr, FLIP_MARGIN)) m.set(n.dataset.key, r);
+    });
+    return m;
+  }
+  // 位置变了的元素从旧位置弹簧滑到新位置(动 translate 属性，不碰 transform——不会和悬停/选中的
+  // 抬起效果打架)；enter=true 时新出现的元素淡入放大。被吸顶的组头不参与(它本来就"钉"在那)。
+  function flipFrom(before, exclude, enter) {
+    const cr = contentEl.getBoundingClientRect();
+    contentEl.querySelectorAll('[data-key]').forEach(n => {
+      const key = n.dataset.key;
+      if (exclude && exclude.has(key)) return;
+      const r = n.getBoundingClientRect();
+      if (!inView(r, cr, FLIP_MARGIN)) return;
+      if (n.classList.contains('group-header') && r.top <= cr.top + 1) return;
+      const b = before.get(key);
+      if (!b) {
+        if (enter && r.bottom > cr.top && r.top < cr.bottom) {
+          sgAnimate(n, [{ opacity: 0, scale: '0.9' }, { opacity: 1, scale: '1' }], SPRING.bouncy);
+        }
+        return;
+      }
+      const dx = b.left - r.left, dy = b.top - r.top;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+      // 正在让位滑动的卡不接收点击：换行的卡会斜着滑过别的卡上方，快速双击时第二下会落到它身上
+      n.style.pointerEvents = 'none';
+      const a = sgAnimate(n, [{ translate: `${dx}px ${dy}px` }, { translate: '0px 0px' }], SPRING.snappy);
+      const clear = () => { n.style.pointerEvents = ''; };
+      if (a) { a.onfinish = clear; a.oncancel = clear; } else clear();
+    });
+  }
+  function ghostLayer() {
+    let gl = contentEl.querySelector(':scope > .sg-ghost-layer');
+    if (!gl) { gl = document.createElement('div'); gl.className = 'sg-ghost-layer'; contentEl.appendChild(gl); }
+    return gl;
+  }
+  // 把一张卡在当前位置复制成"鬼影"(真身随后被移除/重建)，用来做飞回、淡出这类离场动画
+  function makeGhost(node, r, cr) {
+    const g = node.cloneNode(true);
+    g.classList.add('sg-ghost');
+    g.removeAttribute('data-key');
+    g.removeAttribute('data-id');
+    g.style.position = 'absolute';
+    g.style.left = (r.left - cr.left + contentEl.scrollLeft) + 'px';
+    g.style.top = (r.top - cr.top + contentEl.scrollTop) + 'px';
+    g.style.width = r.width + 'px';
+    g.style.height = r.height + 'px';
+    g.style.margin = '0';
+    g._rect = r;
+    ghostLayer().appendChild(g);
+    return g;
+  }
+  // 通用"带动画的整页重绘"：删除/改档/撤销等会让照片增减的操作用它——消失的原地缩小淡出，
+  // 留下的平滑挪到新位置，新回来的弹出。全屏/对比打开时网格看不见，直接重绘不浪费动画。
+  function animateLayoutChange(mutator) {
+    const fpOpen = document.getElementById('fp-overlay');
+    if (REDUCED_MOTION || (fpOpen && fpOpen.classList.contains('open'))) { mutator(); return; }
+    const before = captureLayout();
+    const oldNodes = new Map();
+    contentEl.querySelectorAll('[data-key]').forEach(n => { if (before.has(n.dataset.key)) oldNodes.set(n.dataset.key, n); });
+    mutator();
+    const cr = contentEl.getBoundingClientRect();
+    const now = new Set();
+    contentEl.querySelectorAll('[data-key]').forEach(n => now.add(n.dataset.key));
+    flipFrom(before, null, true);
+    before.forEach((r, key) => {
+      if (now.has(key) || !inView(r, cr, 0)) return;
+      const old = oldNodes.get(key);
+      if (!old || !(old.classList.contains('photo-card') || old.classList.contains('stack-card'))) return;
+      const g = makeGhost(old, r, cr);
+      const a = sgAnimate(g, [{ opacity: 1, scale: '1' }, { opacity: 0, scale: '0.82' }], SPRING.smooth, { duration: 300 });
+      if (a) a.onfinish = a.oncancel = () => g.remove(); else g.remove();
+    });
+  }
+
   // a photo's tier is null until either the batch analyzer or a manual
   // pick in the detail/compare view sets it — these two helpers are the
   // single place that turns that null into a CSS class / label.
@@ -1503,14 +2245,83 @@ html.theme-transitioning #content * {
     const needs = Math.max(pending, window.__needsWork || 0);   // 含旧数据"缺感知哈希待补"
     el('#analyze-count').textContent = needs;
     el('#btn-analyze').disabled = needs === 0;
+    el('#btn-analyze').title = needs > pending
+      ? `评分算法已更新：其中 ${needs - pending} 张是用旧算法分的档，点一下用新算法重评(你手动改过的档不会变)`
+      : '';
   }
 
-  function refreshToolbar() {
+  // ══════════ 选择(2026-10 重写) ══════════
+  // 选中状态只改类名、不重建网格(不闪、不跳)。组头勾选圈显示 全选✓/部分— /未选；折叠堆按成员
+  // 选中情况显示 全选/部分。选中≥1张时底部浮出选择栏(数量 · 标为废片/可修/精选 · 对比 · 删除)。
+  function refreshSelectionUI() {
+    const sel = state.selected;
+    contentEl.querySelectorAll('.photo-card[data-id]').forEach(c => c.classList.toggle('selected', sel.has(Number(c.dataset.id))));
+    contentEl.querySelectorAll('.stack-card[data-skey]').forEach(sc => {
+      const sub = SUBSTACKS.get(sc.dataset.skey);
+      if (!sub) return;
+      const n = sub.memberIds.reduce((a, id) => a + (sel.has(id) ? 1 : 0), 0);
+      sc.classList.toggle('selected', n === sub.memberIds.length);
+      sc.classList.toggle('partial', n > 0 && n < sub.memberIds.length);
+    });
+    contentEl.querySelectorAll('[data-group-check]').forEach(b => {
+      const ids = GROUPS.get(b.dataset.groupCheck) || [];
+      const n = ids.reduce((a, id) => a + (sel.has(id) ? 1 : 0), 0);
+      b.classList.toggle('is-all', ids.length > 0 && n === ids.length);
+      b.classList.toggle('is-some', n > 0 && n < ids.length);
+      b.title = n === ids.length && n > 0 ? '取消选中这一组' : '选中这一组的全部照片';
+    });
+    contentEl.classList.toggle('has-selection', sel.size > 0);
+    refreshSelectionBar();
+  }
+  function refreshSelectionBar() {
+    const bar = document.getElementById('sel-bar');
+    if (!bar) return;
     const n = state.selected.size;
-    el('#sel-count').textContent = n;
-    el('#btn-delete').disabled = n === 0;
-    const cs = el('#btn-clear-sel');
-    if (cs) { cs.style.display = n > 0 ? '' : 'none'; const csc = el('#clear-sel-count'); if (csc) csc.textContent = n; }
+    const num = document.getElementById('sel-num');
+    if (num && num.textContent !== String(n)) {
+      const grew = n > Number(num.textContent || 0);
+      num.textContent = n;
+      if (n > 0 && bar.classList.contains('show')) sgAnimate(num, [{ scale: grew ? '1.28' : '0.82' }, { scale: '1' }], SPRING.bouncy, { duration: 420 });
+    }
+    const show = n > 0;
+    bar.classList.toggle('show', show);
+    bar.setAttribute('aria-hidden', String(!show));
+    const win = document.querySelector('.app-window');
+    if (win) win.classList.toggle('has-selection', show);
+    const cmp = document.getElementById('sel-compare');
+    if (cmp) { cmp.disabled = n < 2; cmp.title = n < 2 ? '至少选 2 张才能对比' : (n > 4 ? '最多同屏对比 4 张，将取前 4 张' : '同屏对比所选照片'); }
+  }
+  // 兼容旧调用点：以前只刷工具栏计数，现在统一刷选中状态+选择栏
+  function refreshToolbar() { refreshSelectionUI(); }
+  function toggleIdsSelection(ids) {
+    if (!ids || !ids.length) return;
+    const all = ids.every(id => state.selected.has(id));
+    ids.forEach(id => (all ? state.selected.delete(id) : state.selected.add(id)));
+    refreshSelectionUI();
+  }
+  // Shift+点击：从上一次点的那张连选到这一张(按网格顺序；折叠堆连同成员一起)
+  function selectRange(fromId, toId) {
+    const seq = currentVisibleIds;
+    let a = seq.indexOf(fromId), b = seq.indexOf(toId);
+    if (a < 0 || b < 0) { toggleIdsSelection([toId]); return; }
+    if (a > b) [a, b] = [b, a];
+    seq.slice(a, b + 1).forEach(id => {
+      const sub = COVER_TO_SUB.get(id);
+      (sub ? sub.memberIds : [id]).forEach(x => state.selected.add(x));
+    });
+    refreshSelectionUI();
+  }
+  function selectAllVisible() {
+    const ids = [];
+    currentVisibleIds.forEach(id => { const sub = COVER_TO_SUB.get(id); (sub ? sub.memberIds : [id]).forEach(x => ids.push(x)); });
+    ids.forEach(id => state.selected.add(id));
+    refreshSelectionUI();
+    return ids.length;
+  }
+  function clearSelection() {
+    if (!state.selected.size) return;
+    state.selected.clear();
+    refreshSelectionUI();
   }
 
   function renderFolderNav() {
@@ -1555,29 +2366,41 @@ html.theme-transitioning #content * {
       ${items}`;
   }
 
+  // ══════════ 网格渲染(2026-10 重写) ══════════
+  // · 按天分组(废片/可修/精选里也一样按时间分)。原来的"分类视图"已去掉：左侧的废片/可修/精选
+  //   本身就是按档位看，分类视图与它重复(用户反馈)。
+  // · 每个日期组头旁有勾选圈：一点选中这一天(这一段时间)的全部照片，再点取消。
+  // · 堆叠在任何视图下都可用：只按"本组里看得见的成员"成堆，≥2 张才成堆——所以在"精选"里只会
+  //   把精选的那几张叠起来，不会把别的档位成员拽出来(以前只能在"全部"里折叠的原因)。
+  // · 缩略图走加载引擎：重绘时已加载的图直接贴上，不再整屏闪白。
+  let PHOTO_BY_ID = new Map();
+  let SUBSTACKS = new Map();     // skey → { skey, stackId, gkey, memberIds(本组可见成员,最清晰在前), cover }
+  let COVER_TO_SUB = new Map();  // 折叠堆的封面 id → sub(连选/预生成时把整堆成员带上)
+  let GROUPS = new Map();        // 组 key → 本组全部照片 id(含折叠在堆里的)，组头勾选用
+  let STACK_BY_ID = new Map();
+  function byId(id) { return PHOTO_BY_ID.get(id) || PHOTOS.find(p => p.id === id); }
+  function thumbAttrs(p) {
+    const rot = (((p.rotation || 0) % 360) + 360) % 360;
+    const alt = thumbUrlFor(p, thumbTier === 256 ? 512 : 256);
+    return `data-thumb="${sgEsc(thumbUrlFor(p))}" data-alt="${sgEsc(alt)}"${rot ? ` data-rot="${rot}"` : ''}`;
+  }
+
   function cardHTML(p) {
     const sel = state.selected.has(p.id) ? ' selected' : '';
-    const burst = p.burst ? `<span class="burst-badge">${p.burst}张</span>` : '';
     return `
-      <div class="photo-card ${tierClass(p)}${sel}" data-id="${p.id}" data-od-id="photo-card-${p.id}">
-        <div class="photo-thumb" data-thumb="${p.thumbnail || ''}">
-          <span class="photo-check" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path transform="translate(-1.3,0)" d="M4 12l6 6L20 6"/></svg>
-          </span>
-          ${burst}
+      <div class="photo-card ${tierClass(p)}${sel}" data-id="${p.id}" data-key="p:${p.id}">
+        <div class="photo-thumb" ${thumbAttrs(p)}>
+          <span class="photo-check" aria-hidden="true">${CHECK_SVG}</span>
           <span class="tier-tag ${tierClass(p)}">${tierLabelOf(p)}</span>
         </div>
         <div class="photo-meta">
-          <div class="fname">${p.name}</div>
-          <div class="ftime">${p.time}</div>
+          <div class="fname">${sgEsc(p.name)}</div>
+          <div class="ftime">${sgEsc(p.time || '')}</div>
         </div>
       </div>`;
   }
 
-  // how many peeking layers a stack's card shows behind its cover —
-  // scales with the actual member count instead of always looking like
-  // exactly 2 photos. Capped at 4 extra layers (a "5-deep" look) since
-  // beyond that more layers read as visual noise, not more information.
+  // 背后探出的"纸层"数随成员数增加(最多4层)，一眼看出这堆有多厚
   function stackLayerCount(memberCount) {
     if (memberCount <= 2) return 1;
     if (memberCount === 3) return 2;
@@ -1585,203 +2408,234 @@ html.theme-transitioning #content * {
     return 4;
   }
 
-  // collapsed tile standing in for a whole burst/similar group — shows
-  // the cover (best-scored member), a ×N count, and up to two
-  // independent burst/similar badges (either, both, or neither).
-  function stackCardHTML(stack) {
-    const cover = PHOTOS.find(p => p.id === stack.cover) || PHOTOS.find(p => p.id === stack.memberIds[0]);
+  // 折叠态：一张代表卡(封面=这组里最清晰的)。左上勾选圈=整组选中/取消；点卡片其余位置=展开。
+  function stackCardHTML(sub) {
+    const cover = byId(sub.cover);
     if (!cover) return '';
-    const badges = `${stack.burst ? '<span class="stack-badge-burst" title="连拍">⚡</span>' : ''}${stack.similar ? '<span class="stack-badge-similar" title="相似">⧉</span>' : ''}`;
-    const layerCount = stackLayerCount(stack.memberIds.length);
-    const layers = Array.from({ length: layerCount }, (_, i) => `<div class="stack-layer" data-depth="${i + 1}"></div>`).join('');
+    const n = sub.memberIds.length;
+    const layers = Array.from({ length: stackLayerCount(n) }, (_, i) => `<div class="stack-layer" data-depth="${i + 1}"></div>`).join('');
     return `
-      <div class="stack-card" data-stack-id="${stack.id}" data-od-id="stack-card-${stack.id}">
+      <div class="stack-card" data-skey="${sgEsc(sub.skey)}" data-key="s:${sgEsc(sub.skey)}" title="${n} 张相似照片 · 点击展开">
         ${layers}
-        <div class="photo-card stack-card-thumb ${tierClass(cover)}" data-id="${cover.id}">
-          <div class="photo-thumb" style="background-image:url('${cover.thumbnail || ''}')">
-            <span class="stack-count-badge" data-od-id="stack-count-badge-${stack.id}">×${stack.memberIds.length}</span>
-            <div class="stack-badges">${badges}</div>
+        <div class="photo-card stack-card-thumb ${tierClass(cover)}" data-cover="${cover.id}">
+          <div class="photo-thumb" ${thumbAttrs(cover)}>
+            <button class="photo-check stack-check" data-stack-check="${sgEsc(sub.skey)}" aria-label="选中这组 ${n} 张相似照片">${CHECK_SVG}</button>
+            <span class="stack-count-badge">${LAYERS_SVG}${n}</span>
             <span class="tier-tag ${tierClass(cover)}">${tierLabelOf(cover)}</span>
           </div>
           <div class="photo-meta">
-            <div class="fname">${cover.name}</div>
-            <div class="ftime">${cover.time}</div>
+            <div class="fname">${sgEsc(cover.name)}</div>
+            <div class="ftime">相似 ${n} 张 · ${sgEsc(cover.time || '')}</div>
           </div>
         </div>
       </div>`;
   }
 
-  // expanded state — every member inline in one full-width strip, with
-  // the recommended-keep member starred/highlighted and a keep/delete
-  // pair of actions on each.
-  function stackExpandHTML(stack) {
-    const members = stack.memberIds.map(id => PHOTOS.find(p => p.id === id)).filter(Boolean);
-    const keepId = stackKeep.get(stack.id);
-    const badges = `${stack.burst ? '<span class="stack-badge-burst" title="连拍">⚡</span>' : ''}${stack.similar ? '<span class="stack-badge-similar" title="相似">⧉</span>' : ''}`;
-    return `
-      <div class="stack-expand" data-stack-id="${stack.id}" data-od-id="stack-expand-${stack.id}">
-        <div class="stack-expand-head">
-          <span class="stack-expand-title">共 ${members.length} 张 ${badges}</span>
-          <button class="btn btn-sm stack-collapse" data-stack-id="${stack.id}" data-od-id="stack-collapse-${stack.id}">收起</button>
-        </div>
-        <div class="stack-expand-grid">
-          ${members.map(p => `
-            <div class="stack-member${p.id === keepId ? ' is-keep' : ''}${state.selected.has(p.id) ? ' selected' : ''}" data-id="${p.id}" data-od-id="stack-member-${p.id}">
-              <div class="photo-thumb" data-thumb="${p.thumbnail || ''}">
-                ${p.id === keepId ? '<span class="stack-keep-star" title="推荐保留">★</span>' : ''}
-              </div>
-              <div class="stack-member-actions">
-                <button class="stack-keep${p.id === keepId ? ' active' : ''}" data-id="${p.id}" data-stack-id="${stack.id}" data-od-id="stack-keep-${p.id}">保留</button>
-                <button class="stack-delete" data-id="${p.id}" data-stack-id="${stack.id}" data-od-id="stack-delete-${p.id}">删除</button>
-              </div>
-            </div>`).join('')}
-        </div>
-      </div>`;
-  }
-
-  // drop-in replacement for `items.map(cardHTML).join('')` — when stack
-  // mode is on, a group's members collapse to one card (or expand strip)
-  // the first time any of them is encountered; renderedStackIds is
-  // shared across the whole render() pass so a stack can't be emitted
-  // twice even if its members land in more than one day/tier group.
-  function stackMemberCardHTML(p, stack, isKeep, isFirst) {
+  // 展开态的一个成员 = 一张普通照片卡(单击选中、双击全屏、懒加载都沿用)。最清晰那张带金色★，
+  // ★兼作"收起这组"按钮(用户建议)；悬停出现右下角删除钮。
+  function stackMemberCardHTML(p, sub, isFirst) {
     const sel = state.selected.has(p.id) ? ' selected' : '';
-    const badges = `${stack.burst ? '<span class="stack-badge-burst" title="连拍">⚡</span>' : ''}${stack.similar ? '<span class="stack-badge-similar" title="相似">⧉</span>' : ''}`;
-    // 最锐那张的★兼作"收起整组"按钮(用户建议:省一个钮、不与左下角档位标识打架)
-    const star = isKeep ? `<button class="stack-keep-star" data-stack-id="${stack.id}" title="最锐 · 点此收起这组">★</button>` : '';
+    const best = p.id === sub.cover;
     return `
-      <div class="photo-card stack-cell${isKeep ? ' is-keep' : ''}${sel} ${tierClass(p)}" data-id="${p.id}" data-stack-id="${stack.id}" data-od-id="stack-cell-${p.id}">
-        <div class="photo-thumb" data-thumb="${p.thumbnail || ''}">
-          <span class="photo-check" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path transform="translate(-1.3,0)" d="M4 12l6 6L20 6"/></svg></span>
-          <div class="stack-badges">${badges}</div>
-          ${star}
-          <button class="stack-cell-del" data-stack-id="${stack.id}" data-del-member="${p.id}" title="删除这张" aria-label="删除这张">✕</button>
+      <div class="photo-card stack-cell${best ? ' is-keep' : ''}${sel} ${tierClass(p)}" data-id="${p.id}" data-key="p:${p.id}" data-skey="${sgEsc(sub.skey)}">
+        <div class="photo-thumb" ${thumbAttrs(p)}>
+          <span class="photo-check" aria-hidden="true">${CHECK_SVG}</span>
+          ${best ? `<button class="stack-keep-star" data-fold="${sgEsc(sub.skey)}" title="这组里最清晰的一张 · 点此收起这组">★</button>` : ''}
+          <button class="stack-cell-del" data-del-member="${p.id}" title="删除这张" aria-label="删除这张">✕</button>
           <span class="tier-tag ${tierClass(p)}">${tierLabelOf(p)}</span>
         </div>
-        <div class="photo-meta"><div class="fname">${p.name}</div><div class="ftime">${p.time}</div></div>
+        <div class="photo-meta"><div class="fname">${sgEsc(p.name)}</div><div class="ftime">${sgEsc(p.time || '')}</div></div>
       </div>`;
   }
 
-  function renderCardsHTML(items, renderedStackIds, visibleIds) {
+  // 当前看到的照片：档位 ∩ 文件夹 ∩ 搜索 ∩ 机型
+  function currentList() {
+    const q = state.search.trim().toLowerCase();
+    return PHOTOS.filter(p => {
+      const tierOk = state.filter === 'all' ? true : state.filter === 'pending' ? p.tier === null : p.tier === state.filter;
+      return tierOk && inScope(p, q);
+    });
+  }
+  // "当前范围"：不看档位筛选(文件夹/搜索/机型)。一键全选某档时只选这个范围里的——以前会把
+  // 别的文件夹里看不见的废片也选上，一删就删到看不见的照片。
+  function inScope(p, q) {
+    const folderOk = state.folder === 'all' ? true
+      : Array.isArray(state.folder) ? state.folder.includes(p.folder) : p.folder === state.folder;
+    const searchOk = !q || (p.filename && p.filename.toLowerCase().includes(q));
+    const cameraOk = state.camera === 'all' || p.cam === state.camera;
+    return folderOk && searchOk && cameraOk;
+  }
+  function scopeList() {
+    const q = state.search.trim().toLowerCase();
+    return PHOTOS.filter(p => inScope(p, q));
+  }
+
+  const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+  function dayInfo(day) {
+    if (!day) return { title: '未知日期', sub: '没有拍摄时间' };
+    const m = /^(\d{4})年(\d{1,2})月(\d{1,2})日$/.exec(day);
+    if (!m) return { title: day, sub: '' };
+    const d = new Date(+m[1], +m[2] - 1, +m[3]);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const diff = Math.round((today - d) / 86400000);
+    const rel = diff === 0 ? '今天 · ' : diff === 1 ? '昨天 · ' : '';
+    const title = d.getFullYear() === today.getFullYear() ? `${+m[2]}月${+m[3]}日` : day;
+    return { title, sub: rel + WEEKDAYS[d.getDay()] };
+  }
+  function groupHeaderHTML(gkey, title, sub, count, extraCls) {
+    return `<div class="group-header${extraCls ? ' ' + extraCls : ''}" data-key="g:${sgEsc(gkey)}">
+        <button class="group-check" data-group-check="${sgEsc(gkey)}" title="选中这一组的全部照片" aria-label="选中这一组的全部照片">${CHECK_SVG}</button>
+        <h3>${sgEsc(title)}</h3>${sub ? `<span class="group-sub">${sgEsc(sub)}</span>` : ''}
+        <span class="group-count">${count} 张</span>
+      </div>`;
+  }
+
+  // 一个日期组里的卡片：普通照片 / 折叠堆 / 展开的堆成员。visibleIds 按网格顺序收集(全屏左右翻页用)。
+  function renderGroupGrid(gkey, items, visibleIds) {
+    const inGroup = new Set(items.map(p => p.id));
+    const done = new Set();
     let html = '';
     items.forEach(p => {
-      // 堆叠只在"全部+时间视图"有意义(浏览时折叠重复);按档位筛选/分类分组时不堆叠,
-      // 免把整组跨档位成员拽出来。
-      const useStacks = state.stackMode && state.filter === 'all' && state.view === 'time';
-      const stackId = useStacks ? photoIdToStack.get(p.id) : undefined;
-      if (!stackId) { html += cardHTML(p); if (visibleIds) visibleIds.push(p.id); return; }
-      if (renderedStackIds.has(stackId)) return;
-      renderedStackIds.add(stackId);
-      const stack = STACKS.find(s => s.id === stackId);
-      // 只算"还在库里"的成员——任何删除途径(✕/选中删/全屏删)后都对齐。其它重复删光只剩≤1张
-      // 的堆自动解散，成员回落普通照片卡(脱掉相似/★标识)。非破坏性(不改STACKS，撤销恢复后回组)。
-      const liveIds = stack ? stack.memberIds.filter(mid => PHOTOS.some(x => x.id === mid)) : [];
-      if (liveIds.length < 2) {
-        liveIds.forEach(mid => {
-          const mp = PHOTOS.find(x => x.id === mid);
-          if (mp) { html += cardHTML(mp); if (visibleIds) visibleIds.push(mp.id); }
-        });
-        return;
-      }
-      const cover = liveIds.includes(stack.cover) ? stack.cover : liveIds[0];
-      const liveStack = { id: stack.id, memberIds: liveIds, cover: cover, burst: stack.burst, similar: stack.similar };
-      if (expandedStacks.has(stackId)) {
-        const rawKeep = stackKeep.get(stack.id);
-        const keepId = liveIds.includes(rawKeep) ? rawKeep : cover;
-        liveIds.forEach((mid, mi) => {
-          const mp = PHOTOS.find(x => x.id === mid);
-          if (mp) { html += stackMemberCardHTML(mp, liveStack, mid === keepId, mi === 0); if (visibleIds) visibleIds.push(mp.id); }
-        });
+      const sid = state.stackMode ? photoIdToStack.get(p.id) : undefined;
+      const stack = sid && STACK_BY_ID.get(sid);
+      const skey = stack ? sid + '@' + gkey : '';
+      if (stack && done.has(skey)) return;
+      const members = stack ? stack.memberIds.filter(id => inGroup.has(id)) : [];
+      if (members.length < 2) { html += cardHTML(p); visibleIds.push(p.id); return; }
+      done.add(skey);
+      const sub = { skey, stackId: sid, gkey, memberIds: members, cover: members[0] };
+      SUBSTACKS.set(skey, sub);
+      if (expandedStacks.has(skey)) {
+        members.forEach((mid, i) => { const mp = byId(mid); if (mp) { html += stackMemberCardHTML(mp, sub, i === 0); visibleIds.push(mid); } });
       } else {
-        html += stackCardHTML(liveStack);
-        // 折叠态只显封面、成员不在网格里→不进导航序列(全屏左右不会跳进看不见的折叠成员)
+        html += stackCardHTML(sub);
+        COVER_TO_SUB.set(sub.cover, sub);
+        visibleIds.push(sub.cover);   // 折叠态：封面也能在全屏里翻到
       }
     });
+    GROUPS.set(gkey, items.map(p => p.id));
     return html;
   }
 
+  const EMPTY_ICONS = {
+    photos: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-8 8"/></svg>',
+  };
+  function emptyStateHTML() {
+    if (!PHOTOS.length) {
+      return `<div class="empty-state"><div class="empty-icon">${EMPTY_ICONS.photos}</div><h3>图库还是空的</h3><p>插入存储卡会自动弹出导入窗口；也可以点左下角「导入新存储卡…」选一个文件夹。</p></div>`;
+    }
+    // 档位视图的空状态说人话：告诉用户这里为什么空、怎么让照片出现在这里
+    const narrowed = state.search.trim() || state.camera !== 'all' || state.folder !== 'all';
+    const TIER_EMPTY = {
+      good: ['还没有精选照片', '在大图里按 3、或选中照片后在底部选择栏点「精选」，喜欢的照片就会出现在这里。'],
+      fix: ['没有可修的照片', '分析后清晰度、曝光或噪点"差一点"、修一修还能用的照片会归到这里。'],
+      bad: ['没有废片', '分析后严重模糊、大面积高光修剪(细节已丢)或噪点重到降噪也救不回的照片会归到这里。'],
+      pending: ['照片都分析过了', '新导入的照片会先出现在这里，点左侧「开始分析」即可分档。'],
+    };
+    if (!narrowed && TIER_EMPTY[state.filter]) {
+      const [t, d] = TIER_EMPTY[state.filter];
+      return `<div class="empty-state"><div class="empty-icon">${EMPTY_ICONS.photos}</div><h3>${t}</h3><p>${d}</p></div>`;
+    }
+    return `<div class="empty-state"><div class="empty-icon">${EMPTY_ICONS.photos}</div><h3>这里没有照片</h3><p>当前的筛选条件下没有照片，换个档位、文件夹或清空搜索试试。</p></div>`;
+  }
+
+  function byDay(arr) {
+    const m = new Map();
+    arr.forEach(p => { const k = p.day || ''; if (!m.has(k)) m.set(k, []); m.get(k).push(p); });
+    return [...m.entries()];
+  }
+  function dayGroupHTML(gkey, day, items, visibleIds) {
+    const grid = renderGroupGrid(gkey, items, visibleIds);
+    const info = dayInfo(day);
+    // data-title/sub：拖滚动条时旁边浮出的日期标签读这里
+    return `<section class="day-group" data-title="${sgEsc(info.title)}" data-sub="${sgEsc(info.sub)}">${groupHeaderHTML(gkey, info.title, info.sub, items.length, '')}<div class="grid">${grid}</div></section>`;
+  }
+
   function render() {
-    const list = PHOTOS.filter(p => {
-      const tierOk = state.filter === 'all' ? true : state.filter === 'pending' ? p.tier === null : p.tier === state.filter;
-      const folderOk = state.folder === 'all'
-        ? true
-        : Array.isArray(state.folder) ? state.folder.includes(p.folder) : p.folder === state.folder;
-      const q = state.search.trim().toLowerCase();
-      const searchOk = !q || (p.filename && p.filename.toLowerCase().includes(q));
-      const cameraOk = state.camera === 'all' || p.cam === state.camera;
-      return tierOk && folderOk && searchOk && cameraOk;
-    });
-    // the order photos actually land in the grid — captured here so the
-    // fullscreen preview's prev/next buttons walk the same sequence the
-    // user is browsing, whatever the current filter/folder/view is.
+    PHOTO_BY_ID = new Map(PHOTOS.map(p => [p.id, p]));
+    STACK_BY_ID = new Map(STACKS.map(s => [s.id, s]));
+    SUBSTACKS = new Map();
+    COVER_TO_SUB = new Map();
+    GROUPS = new Map();
+    const list = currentList();
+    // 选中只保留当前看得见的照片(含折叠在堆里的)：标档后离开视图、或切换筛选后看不见的自动
+    // 取消选中——否则随后按删除会删到看不见的照片
+    if (state.selected.size) {
+      const visible = new Set(list.map(p => p.id));
+      [...state.selected].forEach(id => { if (!visible.has(id)) state.selected.delete(id); });
+    }
     const visibleIds = [];
-    // shared across every group in this pass, so a stack that (in some
-    // filter/folder combination) has members split across groups still
-    // only ever renders its collapsed card/expand strip once.
-    const renderedStackIds = new Set();
     let html = '';
-    if (state.view === 'time') {
-      const days = [...new Set(list.map(p => p.day))];
-      days.forEach(d => {
-        const items = list.filter(p => p.day === d);
-        html += `<div class="group-header"><h3>${d}</h3><span class="group-count">${items.length} 张</span></div>
-                 <div class="grid">${renderCardsHTML(items, renderedStackIds, visibleIds)}</div>`;
-      });
-    } else {
-      const analyzedCount = PHOTOS.filter(p => p.tier !== null).length;   // 全库判,不受当前筛选影响
-      if (analyzedCount === 0 && state.filter === 'all') {
-        html = '<p style="color:var(--muted); padding:48px; text-align:center; line-height:1.7;">这些照片还没有分析。<br>点击左侧「开始分析」，软件会把它们分成 废片 / 可修 / 精选 后在这里按类查看。</p>';
-      }
-      const groups = (analyzedCount === 0 && state.filter === 'all') ? [] : [
-        { key: 'pending', label: PENDING_LABEL, dotVar: 'meta' },
-        { key: 'bad', label: TIER_LABEL.bad, dotVar: 'danger' },
-        { key: 'fix', label: TIER_LABEL.fix, dotVar: 'warn' },
-        { key: 'good', label: TIER_LABEL.good, dotVar: 'success' },
-      ];
-      groups.forEach(g => {
-        const items = list.filter(p => (g.key === 'pending' ? p.tier === null : p.tier === g.key));
-        if (!items.length) return;
-        html += `<div class="group-header"><span class="group-dot" style="background:var(--${g.dotVar})"></span><h3>${g.label}</h3><span class="group-count">${items.length} 张</span></div>
-                 <div class="grid">${renderCardsHTML(items, renderedStackIds, visibleIds)}</div>`;
-      });
-    }
+    pickThumbTier();
+    byDay(list).forEach(([day, items]) => { html += dayGroupHTML('d:' + day, day, items, visibleIds); });
     currentVisibleIds = visibleIds;
-    contentEl.innerHTML = html || '<p style="color:var(--muted); padding:40px; text-align:center;">该分类下暂无照片</p>';
-    if (!window.__thumbObserver) {
-      // rootMargin 提前 300px 开始加载，滚动时不至于看到空白格
-      window.__thumbObserver = new IntersectionObserver((entries) => {
-        entries.forEach(en => {
-          if (!en.isIntersecting) return;
-          const d = en.target;
-          if (d.dataset.thumb) { d.style.backgroundImage = `url('${d.dataset.thumb}')`; d.removeAttribute('data-thumb'); }
-          window.__thumbObserver.unobserve(d);
-        });
-      }, { root: contentEl, rootMargin: '400px' });   // root=滚动容器#content，否则内部滚动不触发加载
-    }
-    contentEl.querySelectorAll('.photo-thumb[data-thumb]').forEach(d => window.__thumbObserver.observe(d));
+    thumbReset();
+    contentEl.innerHTML = html || emptyStateHTML();
+    thumbAttach(contentEl);
     contentEl.classList.toggle('stack-mode-on', state.stackMode);
-    applyStackExpandSpans();
     refreshSidebarCounts();
     refreshAnalyzeButton();
-    refreshToolbar();
+    refreshSelectionUI();
     refreshStackToggle();
     renderFolderNav();
     updateFpNavButtons();
+    scheduleWarm();
+    afterRenderHooks.forEach(f => f());
   }
 
-  // an expanded stack takes up only as many grid columns as it actually
-  // needs for its member count (clamped to however many columns the
-  // grid currently has) — a 2-photo stack shouldn't force a full-width
-  // strip with three empty columns' worth of unused space next to it.
-  function applyStackExpandSpans() {
-    document.querySelectorAll('.stack-expand').forEach(expandEl => {
-      const gridEl = expandEl.closest('.grid');
-      if (!gridEl) return;
-      const cols = getComputedStyle(gridEl).gridTemplateColumns.split(' ').filter(Boolean).length || 1;
-      const stack = STACKS.find(s => s.id === expandEl.dataset.stackId);
-      const memberCount = stack ? stack.memberIds.length : cols;
-      expandEl.style.gridColumn = `span ${Math.max(1, Math.min(memberCount, cols))}`;
-    });
+  // 切换档位/文件夹/视图/搜索：内容区轻轻淡入上浮，而不是硬切
+  function renderWithFade(opts) {
+    render();
+    if (opts && opts.toTop) contentEl.scrollTop = 0;
+    sgAnimate(contentEl, [{ opacity: 0, translate: '0px 8px' }, { opacity: 1, translate: '0px 0px' }], SPRING.smooth, { duration: 380 });
+  }
+
+  // 后台预生成缩略图：先眼前这一屏，再从这一屏往下、往上交替向外扩，最后是别的视图里的照片。
+  // 停止滚动 150ms 就按新位置重排(以前要等 450ms，且只往后排，拖到远处时后端还在按旧位置生成)
+  let warmTimer = 0;
+  function visibleIdRange(ids) {
+    const cr = contentEl.getBoundingClientRect();
+    let lo = -1, hi = -1;
+    for (const c of contentEl.querySelectorAll('.photo-card[data-id], .stack-card[data-skey]')) {
+      const r = c.getBoundingClientRect();
+      if (r.bottom <= cr.top) continue;
+      if (r.top >= cr.bottom) break;
+      let id;
+      if (c.classList.contains('stack-card')) { const sub = SUBSTACKS.get(c.dataset.skey); id = sub ? sub.cover : null; }
+      else id = Number(c.dataset.id);
+      const k = id == null ? -1 : ids.indexOf(id);
+      if (k < 0) continue;
+      if (lo < 0) lo = k;
+      hi = k;
+    }
+    return [lo, hi];
+  }
+  function scheduleWarm(delay) {
+    clearTimeout(warmTimer);
+    warmTimer = setTimeout(() => {
+      // 屏幕上折叠堆藏着的成员图：空闲时顺手取好(低优先级)
+      const cr = contentEl.getBoundingClientRect();
+      const pre = [];
+      contentEl.querySelectorAll('.stack-card[data-skey]').forEach(sc => {
+        const r = sc.getBoundingClientRect();
+        if (r.bottom < cr.top || r.top > cr.bottom) return;
+        const sub = SUBSTACKS.get(sc.dataset.skey);
+        if (sub) sub.memberIds.forEach(id => { const p = byId(id); if (p) pre.push(thumbUrlFor(p)); });
+      });
+      if (pre.length) thumbPrefetch(pre, false);
+      if (!(window.pywebview && window.pywebview.api && window.pywebview.api.warm_thumbnails)) return;
+      const ids = [];
+      currentVisibleIds.forEach(id => { const sub = COVER_TO_SUB.get(id); (sub ? sub.memberIds : [id]).forEach(x => ids.push(x)); });
+      let [lo, hi] = visibleIdRange(ids);
+      if (lo < 0) { lo = 0; hi = -1; }
+      const seen = new Set(), order = [];
+      const push = id => { if (id != null && !seen.has(id)) { seen.add(id); order.push(id); } };
+      for (let k = lo; k <= hi; k++) push(ids[k]);
+      for (let d = 1; hi + d < ids.length || lo - d >= 0; d++) { push(ids[hi + d]); push(ids[lo - d]); }
+      PHOTOS.forEach(p => push(p.id));
+      const todo = order.filter(id => { const p = byId(id); return p && p.thumbnail && !thumbLoaded.has(thumbUrlFor(p)); });
+      try { window.pywebview.api.warm_thumbnails(todo, thumbTier === 256); } catch (e) {}
+    }, delay == null ? 150 : delay);
   }
 
   // disabled + explains why when there's nothing left to fold — e.g.
@@ -1795,325 +2649,185 @@ html.theme-transitioning #content * {
   }
   el('#toolbar-stack-toggle').addEventListener('click', () => {
     state.stackMode = !state.stackMode;
-    render();
+    renderWithFade();
   });
 
-  // expand/collapse a stack, reassign which member is "keep", or delete
-  // one member outright (moved out of the stack and out of the library,
-  // undoable — same shape as the rest of this app's delete actions).
-  function deleteStackMember(stackId, photoId) {
-    const stack = STACKS.find(s => s.id === stackId);
-    if (!stack) return;
-    const memberIdx = stack.memberIds.indexOf(photoId);
-    if (memberIdx === -1) return;
-    const photoIdx = PHOTOS.findIndex(p => p.id === photoId);
-    const removedPhoto = photoIdx !== -1 ? PHOTOS[photoIdx] : null;
-    const wasKeep = stackKeep.get(stackId) === photoId;
+  // ══════════ 网格交互(2026-10 重写) ══════════
+  // 展开/收起堆叠只改动这一堆自己的 DOM(不再整屏重建)，所以：其余缩略图不闪白、页面不跳；
+  // 被挤开的卡片用弹簧平滑让位(FLIP，只动视口附近的)；成员像从一摞牌里依次发出，收起时飞回那一摞。
+  let lastClickedId = null;   // Shift 连选的锚点 / 空格快速预览的备选目标
+  let hoverId = null;         // 鼠标停在哪张：空格快速预览优先看这张
+  let expandedAt = 0;         // 刚展开过的时刻：紧跟的双击不把"展开"误当成一次选中去撤销
 
-    stack.memberIds.splice(memberIdx, 1);
-    photoIdToStack.delete(photoId);
-    if (removedPhoto) PHOTOS.splice(photoIdx, 1);
-    if (wasKeep) stackKeep.set(stackId, stack.memberIds[0]);
-    if (stack.memberIds.length === 0) expandedStacks.delete(stackId);
-
-    render();
-    // 乐观删除已更新UI；5秒后真正调后端把这张送回收站+删库记录，撤销则取消、后端从未被调；
-    // 退出软件前会被 flushPendingDeletes 强制提前执行，不会因为关软件而"从未真删"。
-    const stackEntry = { committed: false };
-    stackEntry.commit = async () => {
-      if (stackEntry.committed) return;
-      stackEntry.committed = true;
-      try {
-        const res = await window.pywebview.api.delete_photos([photoId]);
-        if (res && res.error) showToast('删除失败：' + res.error);
-        else { await refreshFolders(); renderFolderNav(); }
-      } catch (e) { showToast('删除失败：' + e); }
-    };
-    stackEntry.timer = setTimeout(stackEntry.commit, 5000);
-    window.__pendingDeletes.push(stackEntry);
-    showToast(`已删除 ${removedPhoto ? removedPhoto.name : '该照片'}`, {
-      undo: () => {
-        if (stackEntry.committed) return;
-        stackEntry.committed = true;
-        clearTimeout(stackEntry.timer);
-        stack.memberIds.splice(memberIdx, 0, photoId);
-        photoIdToStack.set(photoId, stackId);
-        if (removedPhoto) PHOTOS.splice(photoIdx, 0, removedPhoto);
-        if (wasKeep) stackKeep.set(stackId, photoId);
-        expandedStacks.add(stackId);
-        render();
-      },
-    });
+  function stackCardEl(skey) { return contentEl.querySelector(`.stack-card[data-skey="${CSS.escape(skey)}"]`); }
+  function htmlToNodes(markup) {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = markup;
+    return tpl.content;
   }
-  // FLIP-style follow-through for the collapse↔expand swap: since render()
-  // replaces the grid's innerHTML wholesale, there's no persistent DOM
-  // node a CSS transition could animate — so the old element's on-screen
-  // rect is captured *before* re-rendering, then the freshly-rendered
-  // replacement is animated from that rect to its own natural position/
-  // size via the Web Animations API. That's what makes the reveal read
-  // as "this card grew into that strip" instead of an instant swap.
-  // Expanding/collapsing a stack changes how tall its row is, which
-  // instantly shoves every OTHER card below it (and every group-header
-  // further down the page) into a new position the moment render() runs
-  // — a hard, un-animated jump, since only the stack's own card/members
-  // ever got a transition. This is a general FLIP pass: snapshot where
-  // every card/header currently sits, let the DOM change happen, then
-  // for anything that ended up somewhere else, jump it back to its old
-  // spot with transitions off and immediately transition it forward to
-  // its real spot — so the "shove" reads as a smooth slide instead of a
-  // cut. The stack being toggled is excluded since it already has its
-  // own dedicated grow/deal animation.
-  function captureFlipRects() {
-    const map = new Map();
-    document.querySelectorAll('.group-header').forEach((el, i) => map.set('header:' + i, el.getBoundingClientRect()));
-    document.querySelectorAll('.grid > .photo-card, .grid > .stack-card').forEach(el => {
-      const key = el.classList.contains('stack-card') ? 'stack:' + el.dataset.stackId : 'photo:' + el.dataset.id;
-      map.set(key, el.getBoundingClientRect());
+  // 网格结构变了但没整页重绘时，按 DOM 实际顺序重算全屏左右翻页的序列
+  function syncVisibleIdsFromDom() {
+    const ids = [];
+    contentEl.querySelectorAll('.photo-card[data-id], .stack-card[data-skey]').forEach(n => {
+      if (n.classList.contains('stack-card')) {
+        const sub = SUBSTACKS.get(n.dataset.skey);
+        if (sub) ids.push(sub.cover);
+      } else if (!n.classList.contains('sg-ghost')) {
+        ids.push(Number(n.dataset.id));
+      }
     });
-    return map;
+    currentVisibleIds = ids;
+    updateFpNavButtons();
   }
-  function playFlip(beforeRects, excludeKey) {
-    const settle = (el, key) => {
-      if (key === excludeKey) return;
-      const before = beforeRects.get(key);
-      if (!before) return; // wasn't on screen before — nothing to slide from
-      const after = el.getBoundingClientRect();
-      const dx = before.left - after.left;
-      const dy = before.top - after.top;
-      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return; // didn't actually move
-      el.style.transition = 'none';
-      el.style.transform = `translate(${dx}px, ${dy}px)`;
-      requestAnimationFrame(() => {
-        el.style.transition = 'transform 340ms cubic-bezier(0.22, 1, 0.36, 1)';
-        el.style.transform = '';
-      });
-      el.addEventListener('transitionend', function onDone() {
-        el.style.transition = '';
-        el.removeEventListener('transitionend', onDone);
-      });
-    };
-    document.querySelectorAll('.group-header').forEach((el, i) => settle(el, 'header:' + i));
-    document.querySelectorAll('.grid > .photo-card, .grid > .stack-card').forEach(el => {
-      const key = el.classList.contains('stack-card') ? 'stack:' + el.dataset.stackId : 'photo:' + el.dataset.id;
-      settle(el, key);
-    });
-  }
-  // deals each member out from the collapsed card's position, fanning
-  // into place one after another like cards being dealt from a deck —
-  // a clean ease-out per card, staggered, no spring/overshoot. (A
-  // collapsed .stack-card only ever exists while its stack is NOT
-  // expanded, so this is only ever an expand — collapsing always goes
-  // through the dedicated "收起" button below.)
-  function dealStackMembersIn(expandEl, fromRect) {
-    if (!expandEl || !fromRect) return;
-    const members = Array.from(expandEl.querySelectorAll('.stack-member'));
-    members.forEach((memberEl, i) => {
-      const toRect = memberEl.getBoundingClientRect();
-      if (!toRect.width || !toRect.height) return;
-      const dx = fromRect.left + fromRect.width / 2 - (toRect.left + toRect.width / 2);
-      const dy = fromRect.top + fromRect.height / 2 - (toRect.top + toRect.height / 2);
-      const scale = Math.max(0.2, Math.min(fromRect.width / toRect.width, fromRect.height / toRect.height));
-      const fan = (i % 2 === 0 ? 1 : -1) * (3 + i * 2); // alternating, widening fan angle per card
-      memberEl.animate([
-        { transform: `translate(${dx}px, ${dy}px) scale(${scale}) rotate(${fan}deg)`, opacity: 0.4 },
-        { transform: 'translate(0, 0) scale(1) rotate(0deg)', opacity: 1 },
-      ], {
-        duration: 380,
-        delay: i * 55, // dealt out one at a time, not all at once
-        easing: 'cubic-bezier(0.22, 1, 0.36, 1)', // clean deceleration, no bounce-back
-        fill: 'both',
-      });
-    });
-    // the head bar (count/badges/收起 button) has no "from" position of
-    // its own to grow out of — a quick fade is enough so it doesn't just
-    // pop in ahead of the cards it's labeling.
-    const head = expandEl.querySelector('.stack-expand-head');
-    if (head) head.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 260, easing: 'ease-out' });
-  }
-  // the reverse deal: same per-card language as dealStackMembersIn, run
-  // backwards. Since render() destroys the real .stack-member nodes, the
-  // clones have to exist and be positioned FIRST, while the real cards
-  // are still on screen in the exact same spots — that's what makes the
-  // render() swap underneath them invisible. Doing it the other order
-  // (swap, then build clones from where things used to be) is what
-  // caused the collapsed card to flash into view first, with the old
-  // cards only fading out afterward on top of it.
-  function dealStackMembersOut(stackId) {
-    const expandEl = document.querySelector(`.stack-expand[data-stack-id="${stackId}"]`);
-    if (!expandEl) { expandedStacks.delete(stackId); render(); return; }
-    const members = Array.from(expandEl.querySelectorAll('.stack-member'));
-    const snapshots = members.map(m => {
-      const thumb = m.querySelector('.photo-thumb');
-      return { rect: m.getBoundingClientRect(), bg: thumb ? thumb.style.backgroundImage : '' };
-    });
-    if (!snapshots.length) { expandedStacks.delete(stackId); render(); return; }
-    const beforeFlipRects = captureFlipRects();
 
-    // ghost clones — pixel-for-pixel over the real cards — created
-    // before the DOM swap so the swap itself is invisible underneath
-    // them (nothing to compare against yet, so no flash).
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed; inset:0; pointer-events:none; z-index:70;';
-    document.body.appendChild(overlay);
-    const clones = snapshots.map(({ rect, bg }) => {
-      const clone = document.createElement('div');
-      clone.style.cssText = `position:fixed; left:${rect.left}px; top:${rect.top}px; width:${rect.width}px; height:${rect.height}px; border-radius:var(--radius-md); border:2px solid var(--border); background:var(--bg) ${bg} center/cover no-repeat;`;
-      overlay.appendChild(clone);
-      return clone;
-    });
-
-    // the grid swaps to its real collapsed layout RIGHT NOW — at the
-    // same instant the clones start gathering, not after — so the
-    // photos further down the page slide up into place in lockstep with
-    // the cards gathering into the deck, instead of everything else
-    // waiting and then snapping over afterward.
-    //
-    // But the collapsed card's own APPEARANCE (its stacked-paper look,
-    // cover thumbnail, ×N badge) is a separate thing from where it sits
-    // — it stays invisible (opacity, not display, so it still holds its
-    // exact layout space and the reflow above is unaffected) until every
-    // clone has actually finished gathering into it. Skipping this is
-    // exactly what regressed last time: the reflow fix made the grid
-    // swap immediately, which also made the collapsed card's look pop in
-    // immediately, right back to "already collapsed, then photos catch
-    // up" — the two need to be decoupled, not both tied to render().
-    expandedStacks.delete(stackId);
-    render();
-    playFlip(beforeFlipRects, 'stack:' + stackId);
-
-    const stackCard = document.querySelector(`.stack-card[data-stack-id="${stackId}"]`);
-    const toRect = stackCard ? stackCard.getBoundingClientRect() : null;
-    if (!toRect) { overlay.remove(); return; } // nowhere sensible to gather into — the swap above already happened
-    stackCard.style.transition = 'none';
-    stackCard.style.opacity = '0';
-
-    let remaining = clones.length;
-    const finishOne = () => {
-      remaining--;
-      if (remaining > 0) return;
-      overlay.remove();
-      // only now, with every card actually gathered, does the stacked
-      // look fade in — a quick fade reads as "it just formed", not as
-      // a hard cut either.
-      stackCard.style.transition = 'opacity 200ms ease-out';
-      stackCard.style.opacity = '';
-      stackCard.addEventListener('transitionend', function onFadeInDone() {
-        stackCard.style.transition = '';
-        stackCard.removeEventListener('transitionend', onFadeInDone);
-      }, { once: true });
-    };
-    clones.forEach((clone, i) => {
-      const fromRect = snapshots[i].rect;
-      const dx = toRect.left + toRect.width / 2 - (fromRect.left + fromRect.width / 2);
-      const dy = toRect.top + toRect.height / 2 - (fromRect.top + fromRect.height / 2);
-      const scale = Math.max(0.2, Math.min(toRect.width / fromRect.width, toRect.height / fromRect.height));
-      const fan = (i % 2 === 0 ? 1 : -1) * (3 + i * 2);
-      const anim = clone.animate([
-        { transform: 'translate(0, 0) scale(1) rotate(0deg)', opacity: 1 },
-        { transform: `translate(${dx}px, ${dy}px) scale(${scale}) rotate(${fan}deg)`, opacity: 0.3 },
-      ], {
-        duration: 320,
-        delay: (clones.length - 1 - i) * 55, // gathered up in reverse — the last card dealt is the first to return
-        easing: 'cubic-bezier(0.4, 0, 1, 1)', // clean accelerate-in, no bounce
-        fill: 'forwards',
-      });
-      anim.onfinish = finishOne;
-      anim.oncancel = finishOne;
-    });
-  }
-  function dealStackCellsIn(stackId, fromRect) {
-    const cells = Array.from(document.querySelectorAll(`.stack-cell[data-stack-id="${stackId}"]`));
-    const step = Math.min(45, 500 / Math.max(1, cells.length));
+  function expandStack(skey) {
+    const sub = SUBSTACKS.get(skey);
+    const card = stackCardEl(skey);
+    if (!sub || !card) return;
+    expandedAt = performance.now();
+    const before = captureLayout();
+    const from = card.getBoundingClientRect();
+    expandedStacks.add(skey);
+    COVER_TO_SUB.delete(sub.cover);
+    const frag = htmlToNodes(sub.memberIds.map((mid, i) => { const p = byId(mid); return p ? stackMemberCardHTML(p, sub, i === 0) : ''; }).join(''));
+    const cells = Array.from(frag.children);
+    card.replaceWith(frag);
+    cells.forEach(c => thumbAttach(c));          // 封面等已加载过的图立刻贴上
+    syncVisibleIdsFromDom();
+    refreshSelectionUI();
+    flipFrom(before, new Set(cells.map(c => c.dataset.key)), false);
+    // 发牌：第一张就是原来那摞的封面，原地"抬起"；其余从那摞的位置依次飞向各自格子，
+    // 起始带一点倾角和缩小(像从牌堆里抽出)，落位时轻微回弹。
+    const n = cells.length;
+    const step = Math.min(38, 300 / Math.max(1, n - 1));
     cells.forEach((cell, i) => {
       const to = cell.getBoundingClientRect();
-      if (!to.width || !to.height) return;
-      const dx = fromRect.left + fromRect.width / 2 - (to.left + to.width / 2);
-      const dy = fromRect.top + fromRect.height / 2 - (to.top + to.height / 2);
-      const scale = Math.max(0.3, Math.min(fromRect.width / to.width, fromRect.height / to.height));
-      cell.animate([
-        { transform: `translate(${dx}px, ${dy}px) scale(${scale})`, opacity: 0.4 },
-        { transform: 'none', opacity: 1 },
-      ], { duration: 320, delay: i * step, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', fill: 'both' });
+      if (!to.width) return;
+      if (i === 0) {
+        sgAnimate(cell, [{ scale: '0.97' }, { scale: '1' }], SPRING.bouncy);
+        return;
+      }
+      const dx = (from.left + from.width / 2) - (to.left + to.width / 2);
+      const dy = (from.top + from.height / 2) - (to.top + to.height / 2);
+      const tilt = (i % 2 ? -1 : 1) * Math.min(7, 2 + i * 0.8);
+      cell.style.zIndex = String(n - i);
+      // 飞行中(含还没起飞、透明地叠在牌堆上那段)不接收点击：快速双击牌堆时第二下应落在封面上
+      cell.style.pointerEvents = 'none';
+      const a = sgAnimate(cell, [
+        { translate: `${dx}px ${dy}px`, scale: '0.9', rotate: `${tilt}deg`, opacity: 0 },
+        { opacity: 1, offset: 0.16 },
+        { translate: '0px 0px', scale: '1', rotate: '0deg', opacity: 1 },
+      ], SPRING.bouncy, { delay: (i - 1) * step, fill: 'backwards' });
+      const clear = () => { cell.style.zIndex = ''; cell.style.pointerEvents = ''; };
+      if (a) { a.onfinish = clear; a.oncancel = clear; } else clear();
     });
   }
-  function collapseStackAnimated(stackId) {
-    const cells = Array.from(document.querySelectorAll(`.stack-cell[data-stack-id="${stackId}"]`));
-    if (!cells.length) { expandedStacks.delete(stackId); render(); return; }
-    const toRect = cells[0].getBoundingClientRect();   // 收拢到首张(收起后那摞卡的位置)
-    const step = Math.min(35, 400 / cells.length);
-    let remaining = cells.length;
-    const done = () => { if (--remaining > 0) return; expandedStacks.delete(stackId); render(); };
-    cells.forEach((cell, i) => {
-      const r = cell.getBoundingClientRect();
-      const a = cell.animate([
-        { transform: 'none', opacity: 1 },
-        { transform: `translate(${toRect.left - r.left}px, ${toRect.top - r.top}px)`, opacity: 0.1 },
-      ], { duration: 240, delay: (cells.length - 1 - i) * step, easing: 'cubic-bezier(0.4, 0, 1, 1)', fill: 'forwards' });
-      a.onfinish = done; a.oncancel = done;
-    });
-  }
-  contentEl.addEventListener('click', (e) => {
-    const starBtn = e.target.closest('.stack-keep-star');
-    if (starBtn) { collapseStackAnimated(starBtn.dataset.stackId); return; }
-    const delMem = e.target.closest('.stack-cell-del');
-    if (delMem) { deleteStackMember(delMem.dataset.stackId, Number(delMem.dataset.delMember)); return; }
-    const collapseBtn = e.target.closest('.stack-collapse');
-    if (collapseBtn) { expandedStacks.delete(collapseBtn.dataset.stackId); render(); return; }
-    const keepBtn = e.target.closest('.stack-keep');
-    if (keepBtn) { stackKeep.set(keepBtn.dataset.stackId, Number(keepBtn.dataset.id)); render(); return; }
-    const deleteBtn = e.target.closest('.stack-delete');
-    if (deleteBtn) { deleteStackMember(deleteBtn.dataset.stackId, Number(deleteBtn.dataset.id)); return; }
-    const memberEl = e.target.closest('.stack-member');
-    if (memberEl) {
-      if (e.detail > 1) return;   // 双击交给 dblclick 打开全屏
-      const mid = Number(memberEl.dataset.id);
-      if (state.selected.has(mid)) { state.selected.delete(mid); memberEl.classList.remove('selected'); }
-      else { state.selected.add(mid); memberEl.classList.add('selected'); }
-      refreshToolbar();
-      return;
-    }
-    const stackCard = e.target.closest('.stack-card');
-    if (stackCard) {
-      const id = stackCard.dataset.stackId;
-      const fromRect = stackCard.getBoundingClientRect();
-      expandedStacks.add(id);
-      render();
-      dealStackCellsIn(id, fromRect);   // 成员卡从那摞卡位置逐张发出(扑克牌效果)
-      return;
-    }
-  });
 
-  // single click anywhere on a card toggles selection; double click opens
-  // the fullscreen preview. Disambiguated via the native click's `detail`
-  // (the browser's own click-count-in-this-gesture counter) instead of a
-  // setTimeout — that removes the ~220ms "nothing happens yet" lag a
-  // debounce timer would otherwise put between tap and visible response.
+  function collapseStack(skey) {
+    const sub = SUBSTACKS.get(skey);
+    const cells = Array.from(contentEl.querySelectorAll(`.stack-cell[data-skey="${CSS.escape(skey)}"]`));
+    expandedStacks.delete(skey);
+    if (!sub || !cells.length) { render(); return; }
+    const before = captureLayout();
+    const cr = contentEl.getBoundingClientRect();
+    // 先把还在屏幕上的成员复制成鬼影(真身马上换成折叠卡)，鬼影负责"飞回那一摞"
+    const ghosts = [];
+    cells.slice(1).forEach(c => {
+      const r = c.getBoundingClientRect();
+      if (r.bottom > cr.top && r.top < cr.bottom) ghosts.push(makeGhost(c, r, cr));
+    });
+    const card = htmlToNodes(stackCardHTML(sub)).firstElementChild;
+    cells[0].replaceWith(card);
+    cells.slice(1).forEach(c => c.remove());
+    COVER_TO_SUB.set(sub.cover, sub);
+    thumbAttach(card);
+    syncVisibleIdsFromDom();
+    refreshSelectionUI();
+    // 后面的卡片同时平滑补位(和收拢一起动，而不是等收完再"啪"地跳上来)
+    flipFrom(before, new Set([card.dataset.key]), false);
+    const to = card.getBoundingClientRect();
+    ghosts.forEach((g, i) => {
+      const r = g._rect;
+      const dx = (to.left + to.width / 2) - (r.left + r.width / 2);
+      const dy = (to.top + to.height / 2) - (r.top + r.height / 2);
+      const a = sgAnimate(g, [
+        { translate: '0px 0px', scale: '1', opacity: 1 },
+        { opacity: 1, offset: 0.62 },
+        { translate: `${dx}px ${dy}px`, scale: '0.9', opacity: 0 },
+      ], SPRING.smooth, { duration: 420, delay: (ghosts.length - 1 - i) * 18 });
+      if (a) a.onfinish = a.oncancel = () => g.remove(); else g.remove();
+    });
+    // 那一摞把它们"接住"：轻轻一沉再回弹
+    sgAnimate(card, [{ scale: '1' }, { scale: '0.96', offset: 0.35 }, { scale: '1' }], SPRING.bouncy,
+      { delay: Math.min(220, 120 + ghosts.length * 18) });
+  }
+
   contentEl.addEventListener('click', (e) => {
-    if (e.target.closest('.stack-card')) return; // handled by the stack click listener below
-    if (e.target.closest('.stack-keep-star, .stack-cell-del')) return; // 组内按钮不当选中
-    const card = e.target.closest('.photo-card');
-    if (!card || e.detail > 1) return; // detail>1 belongs to a dblclick gesture
+    const t = e.target;
+    const gc = t.closest('[data-group-check]');
+    if (gc) { toggleIdsSelection(GROUPS.get(gc.dataset.groupCheck) || []); return; }
+    const sc = t.closest('[data-stack-check]');
+    if (sc) { const sub = SUBSTACKS.get(sc.dataset.stackCheck); if (sub) toggleIdsSelection(sub.memberIds); return; }
+    const fold = t.closest('[data-fold]');
+    if (fold) { collapseStack(fold.dataset.fold); return; }
+    const del = t.closest('[data-del-member]');
+    if (del) { trashPhoto(Number(del.dataset.delMember)); return; }
+    const stackCard = t.closest('.stack-card');
+    if (stackCard) { if (e.detail > 1) return; expandStack(stackCard.dataset.skey); return; }
+    const card = t.closest('.photo-card[data-id]');
+    if (!card || e.detail > 1) return;   // detail>1 属于双击手势
     const id = Number(card.dataset.id);
-    if (state.selected.has(id)) { state.selected.delete(id); card.classList.remove('selected'); }
-    else { state.selected.add(id); card.classList.add('selected'); }
-    refreshToolbar();   // 只更新选中计数/按钮，不重建网格(不跳、不重载图)
+    if (e.shiftKey && lastClickedId != null && lastClickedId !== id) selectRange(lastClickedId, id);
+    else toggleIdsSelection([id]);
+    lastClickedId = id;
   });
 
+  // 双击 = 全屏细看(照片从缩略图位置放大飞出)。双击里的第一下单击已经切换过一次选中——撤销它；
+  // 若那一下是"展开堆叠"，则不撤销(没选中过)，直接看这一组最清晰的那张。
   contentEl.addEventListener('dblclick', (e) => {
-    if (e.target.closest('.stack-keep-star, .stack-cell-del')) return; // 组内按钮不当双击查看
-    if (e.target.closest('.stack-card')) return;
-    const card = e.target.closest('.photo-card');
+    const t = e.target;
+    if (t.closest('[data-group-check],[data-stack-check],[data-fold],[data-del-member]')) return;
+    const stackCard = t.closest('.stack-card');
+    if (stackCard) {
+      const sub = SUBSTACKS.get(stackCard.dataset.skey);
+      if (sub) openFullscreenPreview(sub.cover, stackCard.querySelector('.photo-thumb'));
+      return;
+    }
+    const card = t.closest('.photo-card[data-id]');
     if (!card) return;
-    // the gesture's first click already toggled selection above — undo
-    // that (and re-render, so the grid underneath isn't left showing a
-    // stray "selected" card once the fullscreen preview closes) before
-    // opening fullscreen.
-    const id = Number(card.dataset.id);
-    if (state.selected.has(id)) { state.selected.delete(id); card.classList.remove('selected'); }
-    else { state.selected.add(id); card.classList.add('selected'); }
-    refreshToolbar();
-    openFullscreenPreview(id);
+    let id = Number(card.dataset.id);
+    const justExpanded = performance.now() - expandedAt <= 700;
+    if (justExpanded && card.dataset.skey) {
+      // 双击的是牌堆(第一下已把它展开)：看这一组最清晰的那张
+      const sub = SUBSTACKS.get(card.dataset.skey);
+      if (sub) id = sub.cover;
+    }
+    if (!justExpanded) toggleIdsSelection([id]);
+    const thumbEl = contentEl.querySelector(`.photo-card[data-id="${id}"] .photo-thumb`);
+    openFullscreenPreview(id, thumbEl);
   });
+
+  contentEl.addEventListener('mouseover', (e) => {
+    const card = e.target.closest('.photo-card[data-id], .stack-card[data-skey]');
+    if (!card) return;
+    if (card.classList.contains('stack-card')) {
+      const sub = SUBSTACKS.get(card.dataset.skey);
+      hoverId = sub ? sub.cover : null;
+      // 鼠标停在折叠堆上(多半马上要点开)：优先把它藏着的成员图取好
+      if (sub) thumbPrefetch(sub.memberIds.map(id => thumbUrlFor(byId(id))), true);
+    } else hoverId = Number(card.dataset.id);
+  });
+  contentEl.addEventListener('mouseleave', () => { hoverId = null; });
+  // 双击的第二下按下时就让后端开始准备这张的高清预览：等双击打开全屏时多半已经好了，
+  // 不用先看一会儿糊的缩略图
+  contentEl.addEventListener('mousedown', (e) => {
+    if (e.button !== 0 || e.detail !== 2) return;   // 只在双击的第二下：单击/连选不白读卡
+    const card = e.target.closest('.photo-card[data-id], .stack-card[data-skey]');
+    if (!card) return;
+    const sub = card.classList.contains('stack-card') ? SUBSTACKS.get(card.dataset.skey) : null;
+    fpPrefetch(sub ? sub.cover : Number(card.dataset.id));
+  });
+  contentEl.addEventListener('scroll', () => scheduleWarm(), { passive: true });
 
   el('#tier-nav').addEventListener('click', (e) => {
     const btn = e.target.closest('.side-item');
@@ -2122,7 +2836,7 @@ html.theme-transitioning #content * {
     document.querySelectorAll('#tier-nav .side-item').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     state.filter = btn.dataset.filter;
-    render();
+    renderWithFade({ toTop: true });
   });
 
   // folder shortcuts and tier filters are independent, AND'd dimensions —
@@ -2153,7 +2867,7 @@ html.theme-transitioning #content * {
           isCombinedView = true;
         }
       }
-      render();
+      renderWithFade({ toTop: true });
       return;
     }
     if (e.target.closest('[data-multi-folder]')) return; // checkbox — handled by the change listener below
@@ -2169,7 +2883,7 @@ html.theme-transitioning #content * {
     state.filter = 'all';
     document.querySelectorAll('#tier-nav .side-item').forEach(b => b.classList.toggle('active', b.dataset.filter === 'all'));
     isCombinedView = false; // navigating directly always leaves combine mode
-    render();
+    renderWithFade({ toTop: true });
   });
 
   // checking a folder only stages it for "combine" — it doesn't touch
@@ -2255,6 +2969,7 @@ html.theme-transitioning #content * {
         clearTimeout(forgetEntry.timer);
         importedFolders.splice(folderIdx, 0, f);
         PHOTOS.push(...removedPhotos);
+        sortPhotos();
         prevState.selected.forEach(id => state.selected.add(id));
         if (prevState.wasStagedForCombine) selectedFolderSet.add(f);
         state.folder = prevState.folder;
@@ -2266,61 +2981,124 @@ html.theme-transitioning #content * {
     });
   }
 
-  // swipe-to-delete a folder row — same press-and-drag language as the
-  // segmented sliders above: only follows the pointer while it's held
-  // down, snaps back below the commit threshold, and only past it does
-  // releasing actually delete. Delegated on the nav container since rows
-  // are replaced wholesale by renderFolderNav() on every change.
+  // ══════════ 文件夹左滑删除(2026-10 第二轮重做) ══════════
+  // 按住文件夹往左拖：一颗红色胶囊从标签后面"挤"出来(先粘着标签边缘被拉出，到一定大小就停在右侧
+  // 不再变大)；拖过整行 50% 时，胶囊 Q 弹地涨满剩下的空间，垃圾桶居中、桶盖掀开——表示此刻松手
+  // 就删除。没到 50% 松手：标签弹回原位，胶囊缩回去。
+  // 胶囊宽度由一个欠阻尼弹簧追着目标值跑(每帧积分)，所以无论跟手还是突变都是连续、带一点回弹的。
   (function initFolderSwipe() {
     const nav = el('#folder-nav');
-    const DELETE_THRESHOLD = 0.6; // 用户定为拖过60%才删(原50%易误触)。matches the industry-standard "past halfway" dismiss used by Android notification/Gmail-style swipe-to-delete
-    let dragging = false, dragMoved = false, startX = 0, swipeEl = null, rowEl = null, rowWidth = 0;
+    const DELETE_THRESHOLD = 0.5;   // 用户定：拖过整行 50% 才删(60% 嫌多)
+    const PILL_SMALL = 44;          // 没到阈值时胶囊的最大宽度
+    const GAP = 6;                  // 胶囊与行边缘/标签的间距
+    const TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">'
+      + '<g class="lid"><path d="M4 7h16"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></g>'
+      + '<path d="M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/><path d="M10 11v6M14 11v6"/></svg>';
+    let drag = null;   // { swipe, row, pill, startX, width, moved, armed, spring }
+
+    // 弹簧：x 追 target。k 刚度、zeta 阻尼比(<1 欠阻尼=有回弹，Q 弹手感)
+    function makeSpring(pill) {
+      const sp = { x: 0, v: 0, target: 0, raf: 0, last: 0, pill, onRest: null };
+      const K = 520, ZETA = 0.58, C = 2 * ZETA * Math.sqrt(K);
+      function frame(now) {
+        const dt = Math.min(0.032, (now - sp.last) / 1000 || 0.016);
+        sp.last = now;
+        const a = K * (sp.target - sp.x) - C * sp.v;
+        sp.v += a * dt;
+        sp.x += sp.v * dt;
+        const rest = Math.abs(sp.target - sp.x) < 0.3 && Math.abs(sp.v) < 4;
+        if (rest) { sp.x = sp.target; sp.v = 0; }
+        paint();
+        if (rest) { sp.raf = 0; if (sp.onRest) { const f = sp.onRest; sp.onRest = null; f(); } }
+        else sp.raf = requestAnimationFrame(frame);
+      }
+      function paint() {
+        const w = Math.max(0, sp.x);
+        pill.style.width = w.toFixed(1) + 'px';
+        // 刚冒头时从小往大"挤"出来；快速伸缩时上下略微压扁(果冻感)
+        const grow = Math.min(1, w / 26);
+        const squash = Math.max(0.88, 1 - Math.abs(sp.v) / 9000);
+        pill.style.opacity = String(Math.min(1, w / 14));
+        pill.style.transform = `scale(${(0.55 + 0.45 * grow).toFixed(3)}, ${(squash * (0.55 + 0.45 * grow)).toFixed(3)})`;
+      }
+      sp.set = (t) => {
+        sp.target = t;
+        if (!sp.raf) { sp.last = performance.now(); sp.raf = requestAnimationFrame(frame); }
+      };
+      sp.stop = () => { if (sp.raf) cancelAnimationFrame(sp.raf); sp.raf = 0; };
+      return sp;
+    }
+    function pillOf(swipe) {
+      let pill = swipe.querySelector(':scope > .folder-swipe-pill');
+      if (!pill) {
+        pill = document.createElement('div');
+        pill.className = 'folder-swipe-pill';
+        pill.setAttribute('aria-hidden', 'true');
+        pill.innerHTML = TRASH;
+        swipe.insertBefore(pill, swipe.firstChild);
+      }
+      return pill;
+    }
+    function setArmed(d, armed) {
+      if (d.armed === armed) return;
+      d.armed = armed;
+      d.swipe.classList.toggle('armed', armed);
+    }
 
     nav.addEventListener('mousedown', (e) => {
-      if (e.target.closest('[data-multi-folder]')) return; // checkbox has its own click semantics
+      if (e.button !== 0 || e.target.closest('[data-multi-folder]')) return;   // 勾选框有自己的点击语义
       const swipe = e.target.closest('.folder-swipe');
       if (!swipe) return;
-      swipeEl = swipe;
-      rowEl = swipe.querySelector('.folder-row');
-      rowWidth = swipe.getBoundingClientRect().width;
-      startX = e.clientX;
-      dragging = true; dragMoved = false;
+      const row = swipe.querySelector('.folder-row');
+      const pill = pillOf(swipe);
+      if (swipe._spring) swipe._spring.stop();
+      drag = { swipe, row, pill, startX: e.clientX, width: swipe.getBoundingClientRect().width, moved: false, armed: false, spring: makeSpring(pill) };
+      swipe._spring = drag.spring;
     });
     window.addEventListener('mousemove', (e) => {
-      if (!dragging) return;
-      const dx = Math.min(0, e.clientX - startX); // only leftward
-      if (Math.abs(dx) > 4) dragMoved = true;
-      if (!dragMoved) return;
-      swipeEl.classList.add('dragging');
-      // one property drives both the row's position and the red patch's
-      // width (see CSS) — they can't drift out of sync with each other.
-      swipeEl.style.setProperty('--swipe-x', `${dx}px`);
+      if (!drag) return;
+      if (e.buttons === 0) { window.dispatchEvent(new MouseEvent('mouseup')); return; }   // 丢了松手事件(Alt-Tab 等)：当作松手
+      const dx = Math.min(0, e.clientX - drag.startX);   // 只能往左
+      if (!drag.moved && Math.abs(dx) <= 4) return;
+      if (!drag.moved) { drag.moved = true; drag.swipe.classList.add('dragging'); }
+      drag.swipe.style.setProperty('--swipe-x', `${dx}px`);
+      const revealed = -dx;
+      const armed = revealed / drag.width >= DELETE_THRESHOLD;
+      setArmed(drag, armed);
+      drag.spring.set(armed ? revealed - 2 * GAP : Math.min(Math.max(0, revealed - 2 * GAP), PILL_SMALL));
     });
-    window.addEventListener('mouseup', (e) => {
-      if (!dragging) return;
-      dragging = false;
-      if (!dragMoved) { swipeEl = null; rowEl = null; return; } // plain click — let it bubble normally
-      const dx = Math.min(0, e.clientX - startX);
-      const ratio = Math.min(1, Math.abs(dx) / rowWidth);
-      swipeEl.classList.remove('dragging');
-      const folder = swipeEl.dataset.folder;
-      if (ratio >= DELETE_THRESHOLD) {
-        swipeEl.style.setProperty('--swipe-x', '-100%');
-        setTimeout(() => deleteFolder(folder), 320);
+    window.addEventListener('mouseup', () => {
+      if (!drag) return;
+      const d = drag;
+      drag = null;
+      if (!d.moved) { d.spring.stop(); return; }   // 普通点击：照常冒泡(切换文件夹)
+      d.swipe.classList.remove('dragging');
+      const folder = d.swipe.dataset.folder;
+      if (d.armed) {
+        // 确认删除：标签整个滑出去，胶囊涨满整行，然后这一行收起
+        d.swipe.style.setProperty('--swipe-x', '-100%');
+        d.spring.set(d.width - 2 * GAP);
+        setTimeout(() => {
+          const h = d.swipe.offsetHeight;
+          const a = sgAnimate(d.swipe, [{ height: h + 'px', opacity: 1 }, { height: '0px', opacity: 0 }], SPRING.smooth, { duration: 260, fill: 'forwards' });
+          const done = () => deleteFolder(folder);
+          if (a) a.onfinish = done; else done();
+        }, 260);
       } else {
-        swipeEl.style.setProperty('--swipe-x', '0px');
+        // 没过 50%：标签弹回，胶囊缩回去
+        d.swipe.style.setProperty('--swipe-x', '0px');
+        setArmed(d, false);
+        d.spring.set(0);
       }
-      swipeEl = null; rowEl = null;
+      suppressNextClick = true;
     });
-    // a real drag also fires a trailing click on whatever the pointer
-    // lands on — swallow just that one so it doesn't also switch views
-    // or toggle the checkbox right after a delete-swipe.
+    // 拖动松手后浏览器还会补发一次 click：吞掉它，免得删完/弹回后又切换了文件夹或勾了勾选框
+    let suppressNextClick = false;
     nav.addEventListener('click', (e) => {
-      if (dragMoved) { dragMoved = false; e.stopImmediatePropagation(); }
+      if (suppressNextClick) { suppressNextClick = false; e.stopImmediatePropagation(); e.preventDefault(); }
     }, true);
-    nav.addEventListener('dblclick', (e) => {
-      if (dragMoved) e.stopImmediatePropagation();
-    }, true);
+    nav.addEventListener('mousedown', () => { suppressNextClick = false; }, true);
+    nav.addEventListener('dblclick', (e) => { if (drag && drag.moved) e.stopImmediatePropagation(); }, true);
   })();
 
   // ── sliding segmented control (shared by view-toggle & density-toggle) ──
@@ -2408,16 +3186,12 @@ html.theme-transitioning #content * {
     requestAnimationFrame(() => { thumb.style.transition = ''; });
     return { sync };
   }
-  const viewSeg = initSlidingSegmented(el('#view-toggle'), (item) => {
-    state.view = item.dataset.view;
-    render();
-  });
 
   // ── select-all split button (main action stays instant-trigger; the
   // tier it acts on is a persistent setting, only reachable via the caret).
   // Picking a tier in the dropdown commits and closes immediately — no
   // separate confirm step. ──────────────────────────────────────────
-  state.selectAllTier = localStorage.getItem('shiguang-select-all-tier') || 'bad';
+  state.selectAllTier = sgPrefs.getItem('shiguang-select-all-tier') || 'bad';
   el('#select-all-tier-label').textContent = TIER_LABEL[state.selectAllTier];
 
   function renderSelectAllMenu() {
@@ -2441,7 +3215,7 @@ html.theme-transitioning #content * {
     const item = e.target.closest('.split-btn-menu-item');
     if (!item) return;
     state.selectAllTier = item.dataset.tier;
-    localStorage.setItem('shiguang-select-all-tier', state.selectAllTier);
+    sgPrefs.setItem('shiguang-select-all-tier', state.selectAllTier);
     el('#select-all-tier-label').textContent = TIER_LABEL[state.selectAllTier];
     closeSelectAllMenu();
     showToast(`全选档位已设为「${TIER_LABEL[state.selectAllTier]}」`);
@@ -2451,22 +3225,11 @@ html.theme-transitioning #content * {
   // clicking the main button itself never opens the dropdown — only the
   // small caret does — so this can't be mis-triggered by a normal click.
   el('#btn-select-bad').addEventListener('click', () => {
-    PHOTOS.filter(p => p.tier === state.selectAllTier).forEach(p => state.selected.add(p.id));
-    render();
-    showToast(`已选中全部「${TIER_LABEL[state.selectAllTier]}」照片`);
-  });
-
-  el('#btn-delete').addEventListener('click', () => {
-    const ids = [...state.selected];
-    if (!ids.length) return;
-    state.selected.clear();
-    commitDeleteAfterUndoWindow(ids, `已删除 ${ids.length} 张照片`);
-  });
-
-  el('#btn-clear-sel').addEventListener('click', () => {
-    state.selected.clear();
-    contentEl.querySelectorAll('.photo-card.selected').forEach(c => c.classList.remove('selected'));
-    refreshToolbar();
+    const ids = scopeList().filter(p => p.tier === state.selectAllTier).map(p => p.id);
+    ids.forEach(id => state.selected.add(id));
+    refreshSelectionUI();
+    showToast(ids.length ? `已选中当前范围内的「${TIER_LABEL[state.selectAllTier]}」${ids.length} 张`
+                         : `当前范围内没有「${TIER_LABEL[state.selectAllTier]}」照片`);
   });
 
   // ── import modal ──────────────────────────────────────────────
@@ -2496,9 +3259,15 @@ html.theme-transitioning #content * {
   window.onCardDetected = showCardModal;
   // 覆盖"开软件时卡已经插着"：启动主动叫后端检测当前插着的卡，有照片就弹独立小导入窗
   // (走和运行时插卡同一条 present_card 路径，行为一致——都是小窗，不弹主窗内嵌框)。
-  (async () => {
-    try { await window.pywebview.api.popup_cards_now(); } catch (e) {}
-  })();
+  async function startupCardCheck() {
+    try {
+      const r = await window.pywebview.api.popup_cards_now();
+      if (r && r.synced > 0) {
+        await window.reloadPhotos();
+        showToast(`已从存储卡同步 ${r.synced} 张新照片`);
+      }
+    } catch (e) {}
+  }
 
   function refreshImportStats() {
     const checked = Array.from(folderCheckList.querySelectorAll('input:checked'));
@@ -2564,7 +3333,7 @@ html.theme-transitioning #content * {
     (result.photos || []).forEach(p => PHOTOS.push(p));
     window.__needsWork = 0;   // 这一趟已把待处理(未定档+缺phash)都跑完
     await refreshStacks();
-    render();
+    renderWithFade();
     showToast(`已完成 ${result.analyzed} 张照片的分析`);
   });
   // 后台评分逐张进度推送（api.analyze_all 每处理完一张调一次）
@@ -2637,12 +3406,15 @@ html.theme-transitioning #content * {
     return { x: Math.max(-maxX, Math.min(maxX, pan.x)), y: Math.max(-maxY, Math.min(maxY, pan.y)) };
   }
 
-  function openFullscreenPreview(id) {
+  function openFullscreenPreview(id, fromThumb) {
     const p = PHOTOS.find(p => p.id === id);
     if (!p) return;
     fpPhotoId = id;
+    fpCancelAnim();
     fpZoom = 1;
     fpPan = { x: 0, y: 0 };
+    fpZoomTarget = 1;
+    fpPanTarget = { x: 0, y: 0 };
     fpRotation = (PHOTOS.find(x => x.id === id) || {}).rotation || 0;
     computeFpFit();
     // 切换到新照片时瞬间摆到它自己的角度，不要带旋转动画(否则会从上一张的角度绕过去)
@@ -2650,40 +3422,9 @@ html.theme-transitioning #content * {
     applyFpTransform();
     void fpImage.offsetWidth;
     fpImage.style.transition = '';
-    fpImage.style.backgroundImage = `url('${p.thumbnail || ''}')`;
     // 切到新照片时复位过曝开关（否则开关显示"开"但图是新照片的普通图，状态错位）
     el('#expo-switch').classList.remove('on');
-    // 先糊后清：缩略图(512)已铺上，去请求2560高清预览，加载完平滑换上、去模糊
-    fpImage.classList.add('fp-loading');
-    window.pywebview.api.get_preview(id).then(res => {
-      if (res && res.url && fpPhotoId === id) {
-        const hi = new Image();
-        hi.onload = () => {
-          if (fpPhotoId === id) {
-            window.__previewShown = window.__previewShown || {};
-            window.__previewShown[id] = res.url;  // 供过曝开关关闭时还原到高清
-            // 只有当前没开过曝高亮时才把背景换成高清，否则会把用户正看的高亮图冲掉
-            if (!el('#expo-switch').classList.contains('on')) {
-              fpImage.style.backgroundImage = `url('${res.url}')`;
-            }
-            fpImage.classList.remove('fp-loading');
-          }
-        };
-        hi.src = res.url;
-      } else if (fpPhotoId === id) {
-        // 当前这张确实没高清(原文件缺失)才去模糊；陈旧请求(fpPhotoId!==id)静默丢弃不动UI
-        fpImage.classList.remove('fp-loading');
-      }
-    });
-    // 预加载相邻两张的高清，方向键切换更跟手（fire-and-forget，只为触发生成+缓存）
-    (function () {
-      const idx = currentVisibleIds.indexOf(id);
-      [idx - 1, idx + 1].forEach(j => {
-        if (j >= 0 && j < currentVisibleIds.length) {
-          try { window.pywebview.api.get_preview(currentVisibleIds[j]); } catch (e) {}
-        }
-      });
-    })();
+    fpLoadImage(p);   // 缩略图 → 屏幕预览 → (放大时)原图，逐级换清
     el('#dp-fname').textContent = p.name;
     el('#dp-cam').textContent = p.cam;
     el('#dp-iso').textContent = p.iso;
@@ -2695,48 +3436,56 @@ html.theme-transitioning #content * {
 
     document.querySelectorAll('#dp-tier-picker .tier-btn').forEach(b => b.classList.toggle('active', b.dataset.tier === p.tier));
 
-    // 真实直方图 + 过曝欠曝占比：异步拿真实数据填（fpPhotoId===id 防切走）
-    window.pywebview.api.get_analysis(id).then(res => {
-      if (fpPhotoId !== id || !res || res.histograms == null) return;
+    // 真实直方图 + 高光/阴影修剪与噪点：等这张的屏幕预览备好后再要(眼前这张的清晰图优先；
+    // RAW 实测要读整张 RAW，不能和它抢读卡)。fpPhotoId===id 防切走
+    // 切图时先清掉上一张的直方图与说明，免得等测量的几秒里一直显示别的照片的数据
+    ['#hist-main', '#hist-r', '#hist-g', '#hist-b'].forEach(s => { el(s).innerHTML = ''; });
+    el('#expo-note').textContent = '测量中…';
+    fpRequest(id, 1).then(() => (fpPhotoId === id ? window.pywebview.api.get_analysis(id) : null)).then(res => {
+      if (fpPhotoId !== id) return;
+      if (!res || res.histograms == null) { el('#expo-note').textContent = '这张照片暂时无法分析(原文件不在?)。'; return; }
       buildHist('#hist-main', res.histograms.main, 'var(--fg-2)');
       buildHist('#hist-r', res.histograms.r, 'var(--chan-r)');
       buildHist('#hist-g', res.histograms.g, 'var(--chan-g)');
       buildHist('#hist-b', res.histograms.b, 'var(--chan-b)');
       window.__expoOverlay = window.__expoOverlay || {};
       window.__expoOverlay[id] = res.overlay_url;
+      if (el('#expo-switch').classList.contains('on') && res.overlay_url) fpImage.style.backgroundImage = `url('${res.overlay_url}')`;   // 等待期间开了开关：补应用
       const note = document.getElementById('expo-note');
-      if (note) note.textContent = (res.over_pct > 0 || res.under_pct > 0)
-        ? `高光溢出约 ${res.over_pct}%，暗部无细节约 ${res.under_pct}%。少量溢出(天空/反光/太阳)属正常，只有落在主体上才值得注意。开启开关可高亮查看位置。`
-        : '未检测到明显高光溢出或暗部死黑。';
+      if (note) note.textContent = fpExpoNote(res);
     });
     refreshExpoSpots(p);
     updateFpNavButtons();
 
     applyFpInfo();   // 按当前 fpInfoOpen 决定详情面板开合(默认关)
+    const wasOpen = fpOverlay.classList.contains('open');
     fpOverlay.classList.add('open');
+    if (!wasOpen && fromThumb) heroOpen(fromThumb, p);   // 从缩略图位置放大飞出
   }
 
   function closeFullscreenPreview() {
+    if (!fpOverlay.classList.contains('open')) return;
+    heroClose(PHOTOS.find(x => x.id === fpPhotoId));   // 网格里那张可见时飞回原位
     fpOverlay.classList.remove('open');
     fpPhotoId = null;
+    fpCancelAnim();
   }
   el('#fp-close').addEventListener('click', closeFullscreenPreview);
   const fpDelete = el('#fp-delete');
-  if (fpDelete) fpDelete.addEventListener('click', () => {
-    const id = fpPhotoId;
-    if (id == null) return;
-    closeFullscreenPreview();
-    trashPhoto(id);   // 复用单张删除(送回收站+5秒可撤销)
-  });
+  if (fpDelete) fpDelete.addEventListener('click', () => fpDeleteCurrent());   // 删完直接看下一张
   document.addEventListener('keydown', (e) => {
     if (!fpOverlay.classList.contains('open')) return;
-    if (e.key === 'Escape') { closeFullscreenPreview(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); closeFullscreenPreview(); return; }
     // delegate to the buttons themselves — a disabled button's .click()
     // is a no-op, so this gets the boundary guard for free.
-    if (e.key === 'ArrowLeft') { el('#fp-prev').click(); return; }
-    if (e.key === 'ArrowRight') { el('#fp-next').click(); return; }
+    if (e.key === 'ArrowLeft') { fpGo(-1); return; }
+    if (e.key === 'ArrowRight') { fpGo(1); return; }
     // 若焦点在输入框(如搜索框)，不把数字/字母当快捷键，避免既打分又输入
     if (/^(INPUT|TEXTAREA)$/.test((e.target && e.target.tagName) || '')) return;
+    // 空格=关闭(QuickLook 习惯)，Delete=删这张并看下一张，I=开关详情面板
+    if (e.key === ' ') { e.preventDefault(); closeFullscreenPreview(); return; }
+    if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); fpDeleteCurrent(); return; }
+    if (e.key === 'i' || e.key === 'I') { fpToggleInfo.click(); return; }
     // 快捷键打分：1废片 2可修 3精选 0待分析；e 用外部程序打开原文件
     const kp = PHOTOS.find(x => x.id === fpPhotoId);
     if (kp && ['1','2','3','0'].includes(e.key)) {
@@ -2765,14 +3514,8 @@ html.theme-transitioning #content * {
     el('#fp-prev').disabled = idx <= 0;
     el('#fp-next').disabled = idx === -1 || idx >= currentVisibleIds.length - 1;
   }
-  el('#fp-prev').addEventListener('click', () => {
-    const idx = currentVisibleIds.indexOf(fpPhotoId);
-    if (idx > 0) openFullscreenPreview(currentVisibleIds[idx - 1]);
-  });
-  el('#fp-next').addEventListener('click', () => {
-    const idx = currentVisibleIds.indexOf(fpPhotoId);
-    if (idx !== -1 && idx < currentVisibleIds.length - 1) openFullscreenPreview(currentVisibleIds[idx + 1]);
-  });
+  el('#fp-prev').addEventListener('click', () => fpGo(-1));
+  el('#fp-next').addEventListener('click', () => fpGo(1));
 
   // 详情面板默认关闭，点详情按钮才打开。开合状态记在 fpInfoOpen，全屏内切上一张/
   // 下一张时保持用户上次的开合(openFullscreenPreview 里 applyFpInfo() 复位)。
@@ -2821,46 +3564,280 @@ html.theme-transitioning #content * {
     showToast(`已将该照片手动标记为「${TIER_LABEL[p.tier]}」`);
   });
 
-  // wheel over the big image zooms it; once zoomed, drag to pan.
+  // ══════════ 全屏细看(2026-10)：缩放跟手 + 从缩略图飞出/飞回 + 翻页过渡 ══════════
+  // 缩放：滚轮按光标所在位置放大(盯着鸟眼睛滚，鸟眼睛不会跑出画面)；每帧向目标值指数逼近，
+  // 滚轮一格一格也是连续顺滑的；双击图片=放大到光标处 / 再双击回到全图。
+  let fpZoomTarget = 1;
+  let fpPanTarget = { x: 0, y: 0 };
+  let fpAnimRaf = 0;
+  function fpApplyLive() {
+    fpImage.classList.add('fp-live');
+    fpImage.style.transform = `translate(${fpPan.x}px, ${fpPan.y}px) scale(${fpZoom * (fpFit || 1)}) rotate(${fpRotation || 0}deg)`;
+    fpImage.classList.toggle('zoomed', fpZoom > 1.001);
+    el('#fp-hint').textContent = fpZoom > 1.001 ? zoomHint(fpZoom) : '滚轮缩放放大 · 可拖动查看';
+  }
+  function fpCancelAnim() {
+    if (fpAnimRaf) { cancelAnimationFrame(fpAnimRaf); fpAnimRaf = 0; }
+    fpImage.classList.remove('fp-live');
+  }
+  function fpKick() {
+    if (fpAnimRaf) return;
+    let last = performance.now();
+    const step = (now) => {
+      const dt = Math.min(48, now - last);
+      last = now;
+      const k = 1 - Math.pow(0.7, dt / 16.7);   // 帧率无关：60fps 下每帧追上剩余距离的 30%
+      fpZoom += (fpZoomTarget - fpZoom) * k;
+      fpPan = { x: fpPan.x + (fpPanTarget.x - fpPan.x) * k, y: fpPan.y + (fpPanTarget.y - fpPan.y) * k };
+      const done = Math.abs(fpZoomTarget - fpZoom) < 0.001
+        && Math.abs(fpPanTarget.x - fpPan.x) < 0.25 && Math.abs(fpPanTarget.y - fpPan.y) < 0.25;
+      if (done) { fpZoom = fpZoomTarget; fpPan = { x: fpPanTarget.x, y: fpPanTarget.y }; }
+      fpApplyLive();
+      if (done) { fpAnimRaf = 0; fpImage.classList.remove('fp-live'); }
+      else fpAnimRaf = requestAnimationFrame(step);
+    };
+    fpAnimRaf = requestAnimationFrame(step);
+  }
+  function fpZoomAt(clientX, clientY, z1) {
+    const rect = fpStage.getBoundingClientRect();
+    const cx = clientX - (rect.left + rect.width / 2);
+    const cy = clientY - (rect.top + rect.height / 2);
+    if (!fpAnimRaf) { fpZoomTarget = fpZoom; fpPanTarget = { x: fpPan.x, y: fpPan.y }; }
+    const z0 = fpZoomTarget;
+    z1 = Math.min(16, Math.max(1, z1));
+    // 让光标下的那个像素保持不动：pan' = c - (c - pan) * z1/z0
+    const pan = { x: cx - (cx - fpPanTarget.x) * (z1 / z0), y: cy - (cy - fpPanTarget.y) * (z1 / z0) };
+    fpZoomTarget = z1;
+    fpPanTarget = z1 <= 1.0001 ? { x: 0, y: 0 } : clampFpPan(z1, pan);
+    fpKick();
+    if (z1 > 1.15) ensureFpOriginal(fpPhotoId);   // 一放大就换原图(相机内嵌的全尺寸 JPEG)，看清像素/对焦
+  }
   fpStage.addEventListener('wheel', (e) => {
     e.preventDefault();
-    fpZoom += e.deltaY < 0 ? 0.4 : -0.4;
-    fpZoom = Math.min(16, Math.max(1, fpZoom));
-    fpPan = clampFpPan(fpZoom, fpPan);
-    applyFpTransform();
-    if (fpZoom > 2) ensureFpOriginal(fpPhotoId);   // 放大细看时换真正原图，看清像素/对焦
+    if (!fpAnimRaf) fpZoomTarget = fpZoom;
+    const px = e.deltaY * (e.deltaMode === 1 ? 33 : 1);   // 行模式滚轮换算成像素
+    fpZoomAt(e.clientX, e.clientY, fpZoomTarget * Math.exp(-px * 0.002));
   }, { passive: false });
+  fpStage.addEventListener('dblclick', (e) => {
+    if (e.target.closest('button')) return;
+    fpZoomAt(e.clientX, e.clientY, (fpZoomTarget > 1.05 || fpZoom > 1.05) ? 1 : 2.5);
+  });
 
-  // 放大到高倍时按需加载原图(全分辨率)替掉2560预览，让像素级细节清晰(检查对焦用)。
-  // 原图大且慢，只在真放大某张时才调；拉到后若还停在这张、仍放大、没开过曝高亮才换上。
-  function ensureFpOriginal(id) {
-    window.__origShown = window.__origShown || {};
-    window.__origLoading = window.__origLoading || {};
-    if (window.__origShown[id]) {
-      if (fpPhotoId === id && !el('#expo-switch').classList.contains('on')) {
-        fpImage.style.backgroundImage = `url('${window.__origShown[id]}')`;
-      }
-      return;
-    }
-    if (window.__origLoading[id]) return;
-    window.__origLoading[id] = true;
-    window.pywebview.api.get_original(id).then(res => {
-      window.__origLoading[id] = false;
-      if (res && res.url) {
-        window.__origShown[id] = res.url;
-        const hi = new Image();
-        hi.onload = () => {
-          if (fpPhotoId === id && fpZoom > 1 && !el('#expo-switch').classList.contains('on')) {
-            fpImage.style.backgroundImage = `url('${res.url}')`;
-          }
-        };
-        hi.src = res.url;
-      }
+  // ── 从缩略图"飞出"/飞回(苹果相册的标志性过渡) ──
+  function fpRotOf(p) { return ((((p && p.rotation) || 0) % 360) + 360) % 360; }
+  function fpFitRect(iw, ih) {
+    const s = fpStage.getBoundingClientRect();
+    const k = Math.min(s.width / iw, s.height / ih);
+    const w = iw * k, h = ih * k;
+    return { left: s.left + (s.width - w) / 2, top: s.top + (s.height - h) / 2, width: w, height: h };
+  }
+  // hero 的盒子=全屏里图片的最终位置；起始时用 translate+scale 缩到缩略图上，再用 clip-path
+  // 裁成卡片的取景(卡片是 3:2 裁切)，然后弹簧展开到全图——裁切和尺寸一起连续变化，没有跳变。
+  function heroFly(url, from, to, reverse, onDone) {
+    const hero = document.createElement('div');
+    hero.className = 'fp-hero';
+    hero.style.left = to.left + 'px';
+    hero.style.top = to.top + 'px';
+    hero.style.width = to.width + 'px';
+    hero.style.height = to.height + 'px';
+    hero.style.backgroundImage = `url("${url}")`;
+    document.body.appendChild(hero);
+    const s = Math.max(from.width / to.width, from.height / to.height);
+    const ix = Math.max(0, (to.width - from.width / s) / 2);
+    const iy = Math.max(0, (to.height - from.height / s) / 2);
+    const dx = (from.left + from.width / 2) - (to.left + to.width / 2);
+    const dy = (from.top + from.height / 2) - (to.top + to.height / 2);
+    const small = { translate: `${dx}px ${dy}px`, scale: String(s), clipPath: `inset(${iy}px ${ix}px round ${10 / s}px)` };
+    const big = { translate: '0px 0px', scale: '1', clipPath: 'inset(0px 0px round 0px)' };
+    const a = sgAnimate(hero, reverse ? [big, small] : [small, big], SPRING.snappy, { duration: reverse ? 400 : 460, fill: 'forwards' });
+    const done = () => { hero.remove(); if (onDone) onDone(); };
+    if (a) { a.onfinish = done; a.oncancel = done; } else done();
+  }
+  // 缩略图两档(256/512)宽高比相同，哪档量到过都能用
+  function fpDimsOf(p) { return thumbDims.get(p.thumbnail) || thumbDims.get(thumbUrlFor(p, 256)); }
+  function heroOpen(thumbEl, p) {
+    if (REDUCED_MOTION || !thumbEl || !thumbEl.classList.contains('is-loaded') || fpRotOf(p)) return;
+    const dims = fpDimsOf(p);
+    const from = thumbEl.getBoundingClientRect();
+    if (!dims || from.width < 4) return;
+    fpOverlay.classList.add('hero-flying');
+    const to = fpFitRect(dims[0], dims[1]);
+    thumbEl.style.visibility = 'hidden';
+    heroFly(thumbEl._painted || p.thumbnail, from, to, false, () => {
+      thumbEl.style.visibility = '';
+      fpOverlay.classList.remove('hero-flying');
+    });
+  }
+  function heroClose(p) {
+    setTimeout(() => { thumbPump(); scheduleWarm(); }, 0);   // 看大图时网格让了路，关掉后接着加载
+    if (REDUCED_MOTION || !p || fpZoom > 1.02 || fpRotOf(p)) return;
+    const thumb = contentEl.querySelector(`.photo-card[data-id="${p.id}"] .photo-thumb, .stack-card-thumb[data-cover="${p.id}"] .photo-thumb`);
+    if (!thumb || !thumb.classList.contains('is-loaded')) return;
+    const cr = contentEl.getBoundingClientRect();
+    const to = thumb.getBoundingClientRect();
+    if (to.bottom < cr.top + 8 || to.top > cr.bottom - 8) return;   // 卡片不在屏幕上：普通淡出
+    const dims = fpDimsOf(p);
+    if (!dims) return;
+    const url = fpPreviewUrl.get(p.id) || thumb._painted || p.thumbnail;   // 飞回用屏幕预览(原图太大，不拿来做动画)
+    fpOverlay.classList.add('hero-flying');
+    thumb.style.visibility = 'hidden';
+    heroFly(url, to, fpFitRect(dims[0], dims[1]), true, () => {
+      thumb.style.visibility = '';
+      fpOverlay.classList.remove('hero-flying');
     });
   }
 
+  // ── 上一张/下一张：轻微滑入；到头了"橡皮筋"回弹一下 ──
+  function fpGo(delta) {
+    const idx = currentVisibleIds.indexOf(fpPhotoId);
+    const j = idx + delta;
+    if (idx === -1 || j < 0 || j >= currentVisibleIds.length) {
+      sgAnimate(fpImage, [{ translate: '0px 0px' }, { translate: `${-delta * 22}px 0px`, offset: 0.3 }, { translate: '0px 0px' }],
+        SPRING.bouncy, { duration: 460 });
+      return;
+    }
+    openFullscreenPreview(currentVisibleIds[j]);
+    sgAnimate(fpImage, [{ opacity: 0.3, translate: `${delta * 46}px 0px` }, { opacity: 1, translate: '0px 0px' }],
+      SPRING.snappy, { duration: 380 });
+  }
+  // 全屏里删除当前这张：直接换到下一张(没有下一张就上一张)，而不是退出全屏
+  function fpDeleteCurrent() {
+    const id = fpPhotoId;
+    if (id == null) return;
+    const idx = currentVisibleIds.indexOf(id);
+    const nextId = idx < 0 ? null
+      : (currentVisibleIds[idx + 1] != null ? currentVisibleIds[idx + 1] : currentVisibleIds[idx - 1]);
+    trashPhoto(id);
+    if (nextId != null && currentVisibleIds.includes(nextId)) {
+      openFullscreenPreview(nextId);
+      sgAnimate(fpImage, [{ opacity: 0, scale: '0.94' }, { opacity: 1, scale: '1' }], SPRING.snappy, { duration: 380 });
+    } else {
+      closeFullscreenPreview();
+    }
+  }
+
+
+  // ── 全屏清晰度：缩略图 → 屏幕预览 → 原图，逐级换清，只升不降 ──
+  // 第 0 级：网格里已解码的缩略图，瞬间铺满(会有点糊)；
+  // 第 1 级：2560 屏幕预览(后端从相机内嵌的全尺寸 JPEG 缩出)，铺满屏幕时与原图看不出差别；
+  // 第 2 级：原图——相机写在 RAW 里的全尺寸 JPEG 原样，不再重新压缩；一放大就换上(4K 屏直接用它)。
+  // 以前的问题：晚到的 2560 会把已换上的原图盖回去(放大后又变糊)；某次加载失败不重试，只能切到
+  // 别的照片再切回来才变清楚；预览要等双击后才开始生成。
+  let fpShown = { id: null, level: -1, url: '' };
+  const fpReq = new Map();          // `级别:id` → Promise<url|null>，同一张同一级只请求一次
+  const fpPreviewUrl = new Map();   // id → 屏幕预览地址(飞回动画用)
+  function fpRequest(id, level, fresh) {
+    const key = level + ':' + id;
+    if (!fresh && fpReq.has(key)) return fpReq.get(key);
+    let call;
+    try { call = level === 2 ? window.pywebview.api.get_original(id) : window.pywebview.api.get_preview(id); }
+    catch (e) { call = null; }
+    const pr = Promise.resolve(call).then(res => (res && res.url) || null, () => null).then(url => {
+      if (!url) fpReq.delete(key);   // 没拿到(卡拔了/出错)不记死，下次还会再要
+      return url;
+    });
+    fpReq.set(key, pr);
+    return pr;
+  }
+  // 让后端先把这张的屏幕预览备好(不在浏览器里解码)：鼠标按下时、翻页的相邻几张
+  function fpPrefetch(id) {
+    if (id == null || !(window.pywebview && window.pywebview.api)) return;
+    fpRequest(id, 1).then(url => { if (url) fpPreviewUrl.set(id, url); });
+  }
+  function fpSetShown(id, level, url) {
+    if (fpPhotoId !== id) return;
+    if (fpShown.id === id && level <= fpShown.level) return;
+    fpShown = { id, level, url };
+    if (level >= 1) {
+      window.__previewShown = window.__previewShown || {};
+      window.__previewShown[id] = url;   // 过曝高亮关掉时还原到当前最清晰的这张
+    }
+    if (!el('#expo-switch').classList.contains('on')) fpImage.style.backgroundImage = `url('${url}')`;
+  }
+  // 先在后台解码好再换上：换图那一帧不卡、不闪；失败自动重试
+  function fpLoadLevel(id, level, url, tries) {
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = url;
+    img.decode().then(() => fpSetShown(id, level, url), () => {
+      if (!(tries > 0)) return;
+      setTimeout(() => {
+        if (fpPhotoId !== id) return;
+        fpRequest(id, level, true).then(u => {
+          if (u && fpPhotoId === id) fpLoadLevel(id, level, u + (u.includes('?') ? '&' : '?') + 'r=' + Date.now(), tries - 1);
+        });
+      }, 350);
+    });
+  }
+  function fpNeedsOriginal() {
+    const s = fpStage.getBoundingClientRect();
+    return Math.max(s.width, s.height) * (window.devicePixelRatio || 1) > 2560 * 1.05;
+  }
+  function ensureFpOriginal(id) {
+    if (id == null || (fpShown.id === id && fpShown.level >= 2)) return;
+    fpRequest(id, 2).then(url => { if (url && fpPhotoId === id) fpLoadLevel(id, 2, url, 1); });
+  }
+  function fpLoadImage(p) {
+    const id = p.id;
+    const thumbEl = contentEl.querySelector(`.photo-card[data-id="${id}"] .photo-thumb, .stack-card-thumb[data-cover="${id}"] .photo-thumb`);
+    const first = (thumbEl && thumbEl._painted) || p.thumbnail || '';
+    fpShown = { id, level: 0, url: first };
+    fpImage.style.backgroundImage = `url('${first}')`;
+    if (p.thumbnail && first !== p.thumbnail) fpLoadLevel(id, 0.5, p.thumbnail, 0);   // 网格用的是小档：先补 512
+    fpRequest(id, 1).then(url => {
+      if (fpPhotoId !== id) return;
+      if (url) { fpPreviewUrl.set(id, url); fpLoadLevel(id, 1, url, 2); }
+      if (fpNeedsOriginal()) ensureFpOriginal(id);
+      // 眼前这张的预览到手了，才轮到相邻几张(一张接一张备，不和眼前这张抢读卡)
+      fpPrefetchNeighbors(id);
+      // 停留片刻再让后端备好原图(只生成缓存文件、不解码)，一放大就能换上；快速翻页时不白读卡
+      if (!fpNeedsOriginal()) setTimeout(() => { if (fpPhotoId === id) fpRequest(id, 2); }, 900);
+    });
+    // 看门狗：2.5 秒还停在缩略图(后端正忙/偶发失败)就重新要一次
+    setTimeout(() => {
+      if (fpPhotoId === id && fpShown.id === id && fpShown.level < 1) {
+        fpRequest(id, 1, true).then(u => { if (u && fpPhotoId === id) fpLoadLevel(id, 1, u, 1); });
+      }
+    }, 2500);
+  }
+  // 相邻几张的预览按"下一张 → 上一张 → 下下张"依次备好(串行)：左右翻页时直接就是清晰的。
+  // 用户已经翻走了就停下，不再给旧位置备图。
+  function fpPrefetchNeighbors(id) {
+    const idx = currentVisibleIds.indexOf(id);
+    if (idx < 0) return;
+    const next = [1, -1, 2].map(d => currentVisibleIds[idx + d]).filter(x => x != null);
+    let chain = Promise.resolve();
+    next.forEach(nid => {
+      chain = chain.then(() => {
+        if (fpPhotoId !== id) return null;
+        return fpRequest(nid, 1).then(url => { if (url) fpPreviewUrl.set(nid, url); });
+      });
+    });
+  }
+
+  // 详情面板里"高光/阴影修剪 + 噪点"那一段说明。RAW 实测时报传感器层面的结果和信噪比；
+  // 只能看预览时如实说明"相机内嵌 JPEG 比 RAW 更早白到顶，RAW 里可能还有余量"。
+  function fpExpoNote(res) {
+    const pct = v => (v == null ? '0' : String(v));
+    if (res.measured_on === 'raw') {
+      const parts = [`RAW 实测：高光修剪 ${pct(res.over_pct)}%`];
+      if (res.color_clip_pct > 0) parts.push(`部分通道饱和 ${pct(res.color_clip_pct)}%`);
+      parts.push(`阴影修剪 ${pct(res.under_pct)}%`);
+      let s = parts.join('，') + '。';
+      if (res.snr_db != null) {
+        const db = Math.round(res.snr_db);
+        const level = db >= 30 ? '很干净' : db >= 20 ? '可接受' : db >= 11 ? '偏多，建议用 AI 降噪' : '过重，降噪也难以救回';
+        s += `中间调信噪比 ${db} dB(噪点${level})。`;
+      }
+      return s + '少量修剪(太阳/灯/反光)属正常，落在主体上才值得注意。';
+    }
+    if (!(res.over_pct > 0 || res.under_pct > 0)) return '预览图上没有成片的高光修剪或阴影修剪。';
+    return `预览图估算：高光修剪 ${pct(res.over_pct)}%，阴影修剪 ${pct(res.under_pct)}%。`
+      + '相机内嵌的 JPEG 比 RAW 更早"白到顶"，RAW 里多半还有余量；落在主体上才值得注意。';
+  }
   let fpDrag = null;
   fpImage.addEventListener('mousedown', (e) => {
+    fpCancelAnim();
     if (fpZoom <= 1) return;
     fpDrag = { startX: e.clientX, startY: e.clientY, panX: fpPan.x, panY: fpPan.y };
     fpImage.classList.add('dragging');
@@ -3006,8 +3983,7 @@ html.theme-transitioning #content * {
     PHOTOS = PHOTOS.filter(p => !idSet.has(p.id));
     ids.forEach(id => { state.selected.delete(id); zoomMap.delete(id); panMap.delete(id); });
     compareIds = compareIds.filter(x => !idSet.has(x));
-    render();
-    renderFolderNav();
+    animateLayoutChange(render);
     if (compareOverlay.classList.contains('open')) {
       if (compareIds.length === 0) compareOverlay.classList.remove('open');
       else renderCompare();
@@ -3018,7 +3994,8 @@ html.theme-transitioning #content * {
       entry.committed = true;
       try {
         const res = await window.pywebview.api.delete_photos(ids);
-        if (res && res.error) showToast('删除失败：' + res.error);
+        if (res && res.failed && res.failed.length) { showToast(res.error || '部分照片无法删除，已保留'); await window.reloadPhotos(); }
+        else if (res && res.error) showToast('删除失败：' + res.error);
         else { await refreshFolders(); renderFolderNav(); }
       } catch (e) { showToast('删除失败：' + e); }
     };
@@ -3029,9 +4006,9 @@ html.theme-transitioning #content * {
         if (entry.committed) return;
         entry.committed = true;   // 撤销：标记已处理，防止之后被flush或超时再误删
         clearTimeout(entry.timer);
-        PHOTOS = PHOTOS.concat(removed).sort((a, b) => b.id - a.id);
-        render();
-        renderFolderNav();
+        PHOTOS = PHOTOS.concat(removed);
+        sortPhotos();
+        animateLayoutChange(render);
       },
     });
   }
@@ -3042,7 +4019,7 @@ html.theme-transitioning #content * {
     commitDeleteAfterUndoWindow([id], `已删除 ${p.name}`);
   }
 
-  el('#btn-compare').addEventListener('click', openCompare);
+  el('#sel-compare').addEventListener('click', openCompare);
   el('#btn-exit-compare').addEventListener('click', () => {
     compareOverlay.classList.remove('open');
     addPopover.classList.remove('open');
@@ -3204,19 +4181,20 @@ html.theme-transitioning #content * {
     el('#theme-icon').innerHTML = theme === 'dark' ? SUN_PATH : MOON_PATH;
     themeDip.classList.toggle('raised', theme === 'dark');
     themeDip.setAttribute('aria-pressed', String(theme === 'dark'));
-    localStorage.setItem('shiguang-theme', theme);
+    sgPrefs.setItem('shiguang-theme', theme);
   }
   themeDip.addEventListener('click', () => {
     applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
   });
-  applyTheme(localStorage.getItem('shiguang-theme') || 'light', false);
+  applyTheme(sgPrefs.getItem('shiguang-theme') || 'light', false);
 
   // ── grid density ────────────────────────────────────────────────
   function applyDensity(density) {
     document.documentElement.setAttribute('data-density', density);
-    localStorage.setItem('shiguang-density', density);
+    sgPrefs.setItem('shiguang-density', density);
+    document.dispatchEvent(new CustomEvent('sg-density'));
   }
-  const savedDensity = localStorage.getItem('shiguang-density') || 'comfortable';
+  const savedDensity = sgPrefs.getItem('shiguang-density') || 'comfortable';
   applyDensity(savedDensity);
 
   // 搜索：防抖过滤(避免每敲一键就重画1000+张导致卡顿/丢字) + 加载动效 + 清除
@@ -3245,21 +4223,43 @@ html.theme-transitioning #content * {
     const cb = document.getElementById('search-clear');
     if (cb) cb.addEventListener('click', clearSearch);
   })();
-  // 按机型筛选：点击循环切换 全部机型→各机型→全部
+  // 按机型筛选：下拉菜单列出图库里出现过的机型(带张数)，选中即筛选(以前要一下下循环点)
   (function () {
     const bf = document.getElementById('btn-filter');
     if (!bf) return;
-    bf.addEventListener('click', () => {
-      const cams = ['all', ...Array.from(new Set(PHOTOS.map(p => p.cam).filter(Boolean)))];
-      const i = cams.indexOf(state.camera);
-      state.camera = cams[(i + 1) % cams.length];
+    const menu = document.createElement('div');
+    menu.className = 'sg-menu';
+    menu.id = 'camera-menu';
+    document.body.appendChild(menu);
+    const close = () => menu.classList.remove('open');
+    function open() {
+      const counts = new Map();
+      PHOTOS.forEach(p => { if (p.cam) counts.set(p.cam, (counts.get(p.cam) || 0) + 1); });
+      const rows = [['all', '全部机型', PHOTOS.length]].concat(
+        [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([c, n]) => [c, c, n]));
+      menu.innerHTML = rows.map(([v, label, n]) =>
+        `<button class="sg-menu-item${state.camera === v ? ' selected' : ''}" data-cam="${sgEsc(v)}">${sgEsc(label)}<span class="n">${n}</span></button>`).join('');
+      const r = bf.getBoundingClientRect();
+      menu.style.left = r.left + 'px';
+      menu.style.top = (r.bottom + 6) + 'px';
+      menu.classList.add('open');
+    }
+    bf.addEventListener('click', (e) => { e.stopPropagation(); menu.classList.contains('open') ? close() : open(); });
+    menu.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const it = e.target.closest('[data-cam]');
+      if (!it) return;
+      state.camera = it.dataset.cam;
       const label = document.getElementById('filter-label');
-      if (label) label.textContent = state.camera === 'all' ? '筛选 · 全部机型' : '筛选 · ' + state.camera;
-      render();
+      if (label) label.textContent = state.camera === 'all' ? '全部机型' : state.camera;
+      close();
+      renderWithFade({ toTop: true });
     });
+    document.addEventListener('click', close);
+    window.addEventListener('resize', close);
   })();
   document.querySelectorAll('#density-toggle .seg-item').forEach(b => b.classList.toggle('active', b.dataset.density === savedDensity));
-  const densitySeg = initSlidingSegmented(el('#density-toggle'), (item) => applyDensity(item.dataset.density));
+  const densitySeg = initSlidingSegmented(el('#density-toggle'), (item) => sgSwitchDensity(item.dataset.density));
 
   // ── toast ───────────────────────────────────────────────────────
   let toastTimer;
@@ -3292,15 +4292,19 @@ html.theme-transitioning #content * {
     if (!bar) {
       bar = document.createElement('div');
       bar.id = 'sg-progress';
-      bar.style.cssText = 'position:fixed; left:50%; bottom:24px; transform:translateX(-50%); z-index:9999; background:var(--surface,#fff); color:var(--fg,#222); border:1px solid var(--border,#ddd); border-radius:10px; padding:10px 16px; box-shadow:0 8px 24px rgba(0,0,0,.18); font-size:13px; min-width:260px;';
-      document.body.appendChild(bar);
+      bar.className = 'sg-progress';
+      bar.innerHTML = '<div class="row"><span class="lbl"></span><span class="num"></span></div><div class="bar"><i></i></div>';
+      (document.querySelector('.main') || document.body).appendChild(bar);
     }
+    const tb = document.querySelector('.toolbar');
+    bar.style.top = ((tb ? tb.offsetHeight : 56) + 12) + 'px';
     const pct = total > 0 ? Math.round(done / total * 100) : 0;
-    bar.innerHTML = `<div style="margin-bottom:6px;">${label} ${done}/${total}（${pct}%）</div>`
-      + `<div style="height:6px; background:var(--border,#eee); border-radius:3px; overflow:hidden;"><div style="height:100%; width:${pct}%; background:var(--accent,#2b6cb0); transition:width .15s;"></div></div>`;
-    bar.style.display = 'block';
+    bar.querySelector('.lbl').textContent = label;
+    bar.querySelector('.num').textContent = `${done}/${total} · ${pct}%`;
+    bar.querySelector('.bar > i').style.width = pct + '%';
+    bar.classList.add('show');
     clearTimeout(bar._t);
-    if (done >= total) { bar._t = setTimeout(() => { bar.style.display = 'none'; }, 1200); }
+    if (done >= total) bar._t = setTimeout(() => bar.classList.remove('show'), 1200);
   }
   window.sgProgress = sgProgress;
   window.onImportProgress = function (done, total) { sgProgress(done, total, '正在导入照片'); };
@@ -3336,6 +4340,7 @@ html.theme-transitioning #content * {
       await refreshStacks();
       render();
       renderFolderNav();
+      startupCardCheck();   // JS 桥已就绪：查启动时就插着的卡(新文件夹弹窗+同步新照片)
       // 后台给存量照片补读EXIF拍摄时间（仅原文件可访问的会被补），补完刷新排序
       window.pywebview.api.backfill_metadata().then(res => {
         if (res && res.photos) {
@@ -3361,7 +4366,7 @@ html.theme-transitioning #content * {
     else window.pywebview.api.hide_to_tray();
   }
   async function handleCloseRequest() {
-    const pref = localStorage.getItem('shiguang-close-pref');
+    const pref = sgPrefs.getItem('shiguang-close-pref');
     if (pref === 'quit') { doCloseAction('quit'); return; }
     let trayOk = true;
     try { trayOk = await window.pywebview.api.tray_available(); } catch (e) {}
@@ -3394,17 +4399,496 @@ html.theme-transitioning #content * {
     document.body.appendChild(back);
     const finish = (action) => {
       if (document.getElementById('close-remember').checked) {
-        localStorage.setItem('shiguang-close-pref', action);
+        sgPrefs.setItem('shiguang-close-pref', action);
       }
-      back.remove();
+      sgDismissModal(back);
       doCloseAction(action);
     };
     document.getElementById('close-tray').addEventListener('click', () => finish('tray'));
     document.getElementById('close-quit').addEventListener('click', () => finish('quit'));
     // 点遮罩空白处 = 取消关闭(什么都不做)
-    back.addEventListener('click', (e) => { if (e.target === back) back.remove(); });
+    back.addEventListener('click', (e) => { if (e.target === back) sgDismissModal(back); });
   }
 
+  // ══════════ 2026-10：选择栏 / 快捷键 / 流式分析 / 宿主通知 ══════════
+  // toast 挪进主内容区：与底部选择栏同一条中轴，选择栏出现时自动让到它上方(样式里 has-selection)
+  (function () {
+    const t = document.getElementById('toast');
+    const main = document.querySelector('.main');
+    if (t && main) main.appendChild(t);
+  })();
+
+  // 按拍摄时间放回原位(撤销删除/恢复文件夹后)，口径与后端 list_photos 一致
+  function sortPhotos() {
+    PHOTOS.sort((a, b) => {
+      const an = a.ts == null, bn = b.ts == null;
+      if (an !== bn) return an ? 1 : -1;
+      if (!an && a.ts !== b.ts) return a.ts < b.ts ? 1 : -1;
+      return b.id - a.id;
+    });
+  }
+
+  // 选择栏：批量标档(可撤销)、对比、删除、取消
+  async function markSelected(tier) {
+    const ids = [...state.selected];
+    if (!ids.length) return;
+    const prev = ids.map(id => [id, (byId(id) || {}).tier == null ? null : byId(id).tier]);
+    ids.forEach(id => { const p = byId(id); if (p) p.tier = tier; });
+    animateLayoutChange(render);
+    try { await window.pywebview.api.set_tiers(ids, tier); } catch (e) {}
+    showToast(`已将 ${ids.length} 张标为「${TIER_LABEL[tier]}」`, {
+      undo: () => {
+        const byTier = new Map();
+        prev.forEach(([id, t]) => {
+          const p = byId(id);
+          if (p) p.tier = t;
+          if (!byTier.has(t)) byTier.set(t, []);
+          byTier.get(t).push(id);
+        });
+        byTier.forEach((list, t) => { try { window.pywebview.api.set_tiers(list, t); } catch (e) {} });
+        animateLayoutChange(render);
+      },
+    });
+  }
+  function deleteSelected() {
+    const ids = [...state.selected];
+    if (!ids.length) return;
+    state.selected.clear();
+    commitDeleteAfterUndoWindow(ids, `已删除 ${ids.length} 张照片`);
+  }
+  (function () {
+    const bar = document.getElementById('sel-bar');
+    if (!bar) return;
+    bar.addEventListener('click', (e) => {
+      const tb = e.target.closest('[data-set-tier]');
+      if (tb) markSelected(tb.dataset.setTier);
+    });
+    document.getElementById('sel-clear').addEventListener('click', clearSelection);
+    document.getElementById('sel-delete').addEventListener('click', deleteSelected);
+  })();
+
+  // 网格快捷键(全屏/对比/弹窗打开时不生效)：
+  // 空格=快速预览(鼠标所指那张，仿 QuickLook)，Ctrl+A=全选当前视图，Esc=取消选择，
+  // Delete=删除所选(可撤销)，1/2/3=把所选标为 废片/可修/精选
+  document.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented) return;
+    const compareOpen = compareOverlay.classList.contains('open');
+    if (compareOpen && e.key === 'Escape') { compareOverlay.classList.remove('open'); addPopover.classList.remove('open'); return; }
+    if (fpOverlay.classList.contains('open') || compareOpen) return;
+    if (document.querySelector('.modal-backdrop:not(.hidden)')) return;
+    const tag = (e.target && e.target.tagName) || '';
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) { if (e.key === 'Escape') e.target.blur(); return; }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+      e.preventDefault();
+      const n = selectAllVisible();
+      showToast(`已选中当前视图的 ${n} 张照片`);
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === 'Escape') { if (state.selected.size) { e.preventDefault(); clearSelection(); } return; }
+    if (e.key === ' ') {
+      const id = hoverId != null ? hoverId : lastClickedId;
+      if (id == null || !byId(id)) return;
+      e.preventDefault();
+      const thumb = contentEl.querySelector(`.photo-card[data-id="${id}"] .photo-thumb, .stack-card-thumb[data-cover="${id}"] .photo-thumb`);
+      openFullscreenPreview(id, thumb);
+      return;
+    }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && state.selected.size) { e.preventDefault(); deleteSelected(); return; }
+    if (state.selected.size && (e.key === '1' || e.key === '2' || e.key === '3')) {
+      markSelected({ '1': 'bad', '2': 'fix', '3': 'good' }[e.key]);
+    }
+  });
+
+  // 分析中后端分批推来 {id,tier}：就地给卡片换色、档位标签弹一下，不整页重绘(设计单"逐步更新")
+  window.onAnalyzeBatch = function (items) {
+    let changed = false;
+    (items || []).forEach(it => {
+      const p = byId(it.id);
+      if (!p || p.tier === it.tier) return;
+      p.tier = it.tier;
+      changed = true;
+      contentEl.querySelectorAll(`.photo-card[data-id="${it.id}"], .stack-card-thumb[data-cover="${it.id}"]`).forEach(card => {
+        card.classList.remove('tier-bad', 'tier-fix', 'tier-good', 'tier-pending');
+        card.classList.add(tierClass(p));
+        const tag = card.querySelector('.tier-tag');
+        if (tag) {
+          tag.className = `tier-tag ${tierClass(p)}`;
+          tag.textContent = tierLabelOf(p);
+          sgAnimate(tag, [{ scale: '0.5', opacity: 0 }, { scale: '1', opacity: 1 }], SPRING.bouncy);
+        }
+      });
+    });
+    if (changed) refreshSidebarCounts();
+  };
+  // 后端(插卡后台同步等)请主窗弹一条提示
+  window.sgHostToast = function (msg) { showToast(String(msg || '')); };
+  // 重新拉照片(插卡/导入后)时忘掉"加载失败"记录：拔卡又插回，之前白掉的图要能重新出来
+  (function () {
+    const orig = window.reloadPhotos;
+    if (typeof orig !== 'function') return;
+    window.reloadPhotos = function () { thumbFailed.clear(); return orig.apply(this, arguments); };
+  })();
+
+  function sgDismissModal(back) {
+    if (!back || back.classList.contains('closing')) return;
+    back.classList.add('closing');
+    setTimeout(() => back.remove(), 170);
+  }
+
+  // ══════════ 吸顶组头 / 拖滚动条时的时间刻度 / 网格缩放 ══════════
+  // ── 吸顶：只给"此刻真正吸住"的那个组头加 is-stuck(毛玻璃 + 底部细线，与工具栏连成一块) ──
+  // ── 时间刻度：鼠标移到右侧滚动条附近(或按住滚动条)时出现。轨道里每个拍摄日期一个小圆点(位置=
+  //    拖到这里就是这一天)，旁边一列日期——每个日期都写出来，挤的地方自动错开、用细线连回自己的圆点；
+  //    日期太多一屏放不下时按月份显示。点日期，页面平滑滚到那一天(顶上的日期随之切换)；当前那天高亮。
+  const rulerEl = document.createElement('div');
+  rulerEl.className = 'sg-ruler';
+  (document.querySelector('.main') || document.body).appendChild(rulerEl);
+  let stuckHeader = null;
+  let rulerOn = false;       // 正在显示
+  let rulerDrag = false;     // 正按着滚动条
+  let rulerHover = false;    // 鼠标在刻度/滚动条附近
+  let rulerHideTimer = 0;
+  let rulerMarks = [];       // [{ secs: [这一行对应的日期组...], el, dot }]
+  let scrollRaf = 0;
+  const RULER_GAP = 22;      // 两行日期至少隔这么多像素
+  // 当前视口顶部落在哪个日期组：按 offsetTop 二分(滚动时布局是干净的，读 offsetTop 不触发重排)
+  function currentSection() {
+    const secs = contentEl.children;
+    let lo = 0, hi = secs.length - 1, found = null;
+    const y = contentEl.scrollTop + 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const s = secs[mid];
+      if (!s.classList.contains('day-group')) { hi = mid - 1; continue; }
+      if (s.offsetTop <= y) { found = s; lo = mid + 1; } else hi = mid - 1;
+    }
+    return found;
+  }
+  function updateStuck(sec) {
+    const h = sec && contentEl.scrollTop > sec.offsetTop + 0.5 ? sec.firstElementChild : null;
+    if (h === stuckHeader) return;
+    if (stuckHeader) stuckHeader.classList.remove('is-stuck');
+    stuckHeader = h && h.classList.contains('group-header') ? h : null;
+    if (stuckHeader) stuckHeader.classList.add('is-stuck');
+  }
+  // 拖动拇指时，"某个组的开头滚到顶上"对应的拇指中心位置(与样式里拇指最短 44px 一致)
+  function thumbCenterFor(scrollTop) {
+    const ch = contentEl.clientHeight, sh = contentEl.scrollHeight;
+    const thumbH = Math.max(44, ch * ch / Math.max(1, sh));
+    const ratio = Math.min(1, Math.max(0, scrollTop / Math.max(1, sh - ch)));
+    return ratio * (ch - thumbH) + thumbH / 2;
+  }
+  function monthOf(title) {
+    const m = /(?:(\d{4})年)?(\d{1,2})月/.exec(title || '');
+    return m ? (m[1] ? `${m[1]}年${+m[2]}月` : `${+m[2]}月`) : (title || '');
+  }
+  function buildRuler() {
+    const secs = Array.from(contentEl.children).filter(s => s.classList.contains('day-group'));
+    const H = contentEl.clientHeight;
+    rulerEl.style.top = contentEl.offsetTop + 'px';
+    rulerEl.style.height = H + 'px';
+    const maxScroll = contentEl.scrollHeight - contentEl.clientHeight;
+    // 放得下就每天一行；放不下就按月合并(点月份跳到这个月的第一天)
+    let groups = secs.map(sec => ({ secs: [sec], label: sec.dataset.title || '' }));
+    if (groups.length * RULER_GAP > H - 16) {
+      const byMonth = [];
+      secs.forEach(sec => {
+        const k = monthOf(sec.dataset.title);
+        const last = byMonth[byMonth.length - 1];
+        if (last && last.label === k) last.secs.push(sec); else byMonth.push({ secs: [sec], label: k });
+      });
+      groups = byMonth;
+    }
+    groups.forEach(g => { g.ideal = thumbCenterFor(Math.min(g.secs[0].offsetTop, maxScroll)); });
+    // 一维排布：先按理想位置往下挤开，再从底部往回收——都在轨道范围内、互不重叠
+    const top = 10, bottom = H - 10;
+    let y = -1e9;
+    groups.forEach(g => { g.y = Math.max(g.ideal, y + RULER_GAP, top); y = g.y; });
+    y = 1e9;
+    for (let i = groups.length - 1; i >= 0; i--) { groups[i].y = Math.min(groups[i].y, y - RULER_GAP, bottom); y = groups[i].y; }
+    groups.forEach(g => { g.y = Math.max(g.y, top); });
+    const W = 140, dotX = W - 7, lblX = W - 22;
+    let svg = `<svg class="sg-ruler-links" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`;
+    let html = '';
+    groups.forEach((g, i) => {
+      if (Math.abs(g.y - g.ideal) > 1.5) {
+        const y1 = g.y.toFixed(1), y2 = g.ideal.toFixed(1);
+        svg += `<path d="M${lblX + 2} ${y1} C ${lblX + 9} ${y1}, ${dotX - 8} ${y2}, ${dotX - 3} ${y2}"/>`;
+      }
+      html += `<i class="sg-ruler-dot" data-i="${i}" style="top:${g.ideal.toFixed(1)}px"></i>`
+        + `<button class="sg-ruler-mark" data-i="${i}" style="top:${g.y.toFixed(1)}px" title="跳到 ${sgEsc(g.label)}">${sgEsc(g.label)}</button>`;
+    });
+    rulerEl.innerHTML = svg + '</svg>' + html;
+    rulerMarks = groups.map((g, i) => ({
+      secs: g.secs,
+      el: rulerEl.querySelector(`.sg-ruler-mark[data-i="${i}"]`),
+      dot: rulerEl.querySelector(`.sg-ruler-dot[data-i="${i}"]`),
+    }));
+  }
+  function updateRuler(sec) {
+    if (!rulerOn) return;
+    // 滚到底了：最后几天短得滚不到顶上，此时高亮最后一天(点最后一个日期后亮的就是它)
+    if (contentEl.scrollTop >= contentEl.scrollHeight - contentEl.clientHeight - 2 && rulerMarks.length) {
+      sec = rulerMarks[rulerMarks.length - 1].secs[0];
+    }
+    rulerMarks.forEach(m => {
+      const on = m.secs.includes(sec);
+      m.el.classList.toggle('current', on);
+      m.dot.classList.toggle('current', on);
+    });
+  }
+  function showRuler() {
+    clearTimeout(rulerHideTimer);
+    if (!contentEl.querySelector(':scope > .day-group')) return;
+    if (!rulerOn) { rulerOn = true; buildRuler(); rulerEl.classList.add('show'); }
+    updateRuler(currentSection());
+  }
+  function maybeHideRuler() {
+    if (rulerDrag || rulerHover) return;
+    clearTimeout(rulerHideTimer);
+    rulerHideTimer = setTimeout(() => {
+      if (rulerDrag || rulerHover) return;
+      rulerOn = false;
+      rulerEl.classList.remove('show');
+    }, 450);
+  }
+  function onScrollFrame() {
+    scrollRaf = 0;
+    const sec = currentSection();
+    updateStuck(sec);
+    updateRuler(sec);
+  }
+  contentEl.addEventListener('scroll', () => { if (!scrollRaf) scrollRaf = requestAnimationFrame(onScrollFrame); }, { passive: true });
+  // 鼠标移到右侧滚动条附近(最右 26px)就出现；离开刻度和这一条就淡出
+  contentEl.addEventListener('mousemove', (e) => {
+    const r = contentEl.getBoundingClientRect();
+    const near = e.clientX >= r.right - 26;
+    if (near && !rulerHover) { rulerHover = true; showRuler(); }
+    else if (!near && rulerHover && !rulerEl.matches(':hover')) { rulerHover = false; maybeHideRuler(); }
+  });
+  contentEl.addEventListener('mouseleave', () => { if (!rulerEl.matches(':hover')) { rulerHover = false; maybeHideRuler(); } });
+  rulerEl.addEventListener('mouseenter', () => { rulerHover = true; clearTimeout(rulerHideTimer); });
+  rulerEl.addEventListener('mouseleave', () => { rulerHover = false; maybeHideRuler(); });
+  // 在刻度上滚滚轮照样滚照片
+  rulerEl.addEventListener('wheel', (e) => {
+    if (e.ctrlKey) return;
+    cancelAnimationFrame(jumpRaf);
+    contentEl.scrollTop += e.deltaY * (e.deltaMode === 1 ? 33 : 1);
+    e.preventDefault();
+  }, { passive: false });
+  // 按住滚动条拖动时也显示
+  contentEl.addEventListener('pointerdown', (e) => {
+    if (e.offsetX < contentEl.clientWidth) return;
+    cancelAnimationFrame(jumpRaf);
+    rulerDrag = true;
+    showRuler();
+  });
+  const endDrag = () => { if (!rulerDrag) return; rulerDrag = false; maybeHideRuler(); };
+  window.addEventListener('pointerup', endDrag);
+  window.addEventListener('pointercancel', endDrag);
+  window.addEventListener('blur', () => { endDrag(); rulerHover = false; maybeHideRuler(); });
+  // 点日期：平滑地滚过去(缓入缓出，距离越远时间略长)，而不是一下跳过去
+  let jumpRaf = 0;
+  function smoothScrollTo(target) {
+    cancelAnimationFrame(jumpRaf);
+    const from = contentEl.scrollTop;
+    const to = Math.max(0, Math.min(target, contentEl.scrollHeight - contentEl.clientHeight));
+    const dist = to - from;
+    if (Math.abs(dist) < 1) return;
+    const dur = REDUCED_MOTION ? 1 : Math.min(720, 320 + Math.abs(dist) / 25);
+    const t0 = performance.now();
+    const ease = t => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+    const step = (now) => {
+      const t = Math.min(1, (now - t0) / dur);
+      contentEl.scrollTop = from + dist * ease(t);
+      if (t < 1) jumpRaf = requestAnimationFrame(step);
+    };
+    jumpRaf = requestAnimationFrame(step);
+  }
+  // 用户自己动了滚轮：中断正在进行的平滑滚动
+  contentEl.addEventListener('wheel', () => cancelAnimationFrame(jumpRaf), { passive: true });
+  rulerEl.addEventListener('click', (e) => {
+    const b = e.target.closest('.sg-ruler-mark');
+    if (!b) return;
+    const m = rulerMarks[Number(b.dataset.i)];
+    if (!m) return;
+    sgAnimate(b, [{ scale: '0.9' }, { scale: '1' }], SPRING.bouncy, { duration: 360 });
+    smoothScrollTo(m.secs[0].offsetTop + 1);   // +1：让这一组的组头正好吸在顶上
+  });
+  // 整页重绘后(切档位/删除等)吸顶状态要重算
+  afterRenderHooks.push(() => { stuckHeader = null; if (rulerOn) buildRuler(); onScrollFrame(); });
+
+  // ── 网格缩放：Ctrl+滚轮 / 触控板双指捏合 / Ctrl+加减号，在 迷你·紧凑·标准·大图 之间切换 ──
+  // 以光标下那张照片为锚点(缩放后它还在原来的位置)，像相册里双指缩放那样。
+  const DENSITIES = ['mini', 'compact', 'comfortable', 'large'];
+  function currentDensity() { return document.documentElement.getAttribute('data-density') || 'comfortable'; }
+  // 切换密度的过渡(用户要求)：点工具栏的 迷你/紧凑/标准/大图 时，画面跟着滑块的方向走——往右切
+  // (标准→大图)旧排版向左滑出、新排版从右边滑进来；往左切反过来。Ctrl+滚轮/捏合缩放则是以光标
+  // 为中心的缩放过渡。用浏览器的视图过渡(View Transitions)：先给旧画面拍快照，再换排版，新旧两张
+  // 同时动——不再"一下变白虚化再一下出来"。
+  function setDensity(d, anchorX, anchorY, mode) {
+    const cur = currentDensity();
+    if (!DENSITIES.includes(d) || d === cur) return;
+    const dir = DENSITIES.indexOf(d) - DENSITIES.indexOf(cur);
+    const cr = contentEl.getBoundingClientRect();
+    let anchor = null;
+    if (anchorY != null) {
+      const hit = document.elementFromPoint(anchorX, anchorY);
+      anchor = hit && hit.closest('#content .photo-card[data-id], #content .stack-card');
+    }
+    if (!anchor) {
+      for (const c of contentEl.querySelectorAll('.photo-card[data-id], .stack-card')) {
+        if (c.getBoundingClientRect().bottom > cr.top + 60) { anchor = c; break; }
+      }
+    }
+    const off = anchor ? anchor.getBoundingClientRect().top - cr.top : 0;
+    const zoom = mode === 'zoom';
+    const root = document.documentElement;
+    if (zoom) {
+      const r = anchor ? anchor.getBoundingClientRect() : cr;
+      root.style.setProperty('--vt-ox', `${r.left + r.width / 2 - cr.left}px`);
+      root.style.setProperty('--vt-oy', `${r.top + r.height / 2 - cr.top}px`);
+    }
+    const update = () => {
+      document.querySelectorAll('#density-toggle .seg-item').forEach(b => b.classList.toggle('active', b.dataset.density === d));
+      applyDensity(d);
+      densitySeg.sync();
+      if (anchor && anchor.isConnected) contentEl.scrollTop += anchor.getBoundingClientRect().top - cr.top - off;
+    };
+    if (REDUCED_MOTION) { update(); return; }
+    // 只动滚动区里的内容(眼前那几个日期组)，滚动区本身和它的滚动条不动——以前整块拍快照一起滑，
+    // 右边的滚动条也跟着滑走了。旧排版先往一侧淡出滑走，换好排版再从另一侧滑进来(与工具栏滑块同向)。
+    const visibleSecs = () => {
+      const r0 = contentEl.getBoundingClientRect();
+      return Array.from(contentEl.children).filter(s => {
+        if (!s.classList.contains('day-group') && !s.classList.contains('empty-state')) return false;
+        const r = s.getBoundingClientRect();
+        return r.bottom > r0.top && r.top < r0.bottom;
+      });
+    };
+    densitySeq++;
+    const seq = densitySeq;
+    const dx = zoom ? 0 : (dir > 0 ? -1 : 1);
+    const outFrames = zoom
+      ? [{ opacity: 1, scale: '1' }, { opacity: 0, scale: dir > 0 ? '1.06' : '0.94' }]
+      : [{ opacity: 1, translate: '0px 0px' }, { opacity: 0, translate: `${dx * 64}px 0px` }];
+    const inFrames = zoom
+      ? [{ opacity: 0, scale: dir > 0 ? '0.94' : '1.06' }, { opacity: 1, scale: '1' }]
+      : [{ opacity: 0, translate: `${-dx * 88}px 0px` }, { opacity: 1, translate: '0px 0px' }];
+    const origin = sec => {
+      if (!zoom) return;
+      const r = sec.getBoundingClientRect();
+      const ox = parseFloat(root.style.getPropertyValue('--vt-ox')) || r.width / 2;
+      const oy = (parseFloat(root.style.getPropertyValue('--vt-oy')) || 0) + cr.top - r.top;
+      sec.style.transformOrigin = `${ox}px ${oy}px`;
+    };
+    const olds = visibleSecs();
+    const anims = olds.map(sec => { origin(sec); return sgAnimate(sec, outFrames, { duration: 170, easing: 'cubic-bezier(0.4, 0, 1, 1)' }, { fill: 'forwards' }); });
+    densityOut.push(...anims.filter(Boolean));
+    const swap = () => {
+      if (seq !== densitySeq) return;   // 又切了一次：以最新那次为准
+      densityOut.forEach(a => a.cancel());   // 连点几次时，之前没来得及换的淡出也一并撤掉
+      densityOut = [];
+      update();
+      visibleSecs().forEach(sec => { origin(sec); sgAnimate(sec, inFrames, SPRING.snappy, { duration: 480 }); });
+    };
+    if (anims[0]) anims[0].onfinish = swap; else swap();
+  }
+  let densitySeq = 0;
+  let densityOut = [];
+  function sgSwitchDensity(d) { setDensity(d, null, null, 'slide'); }
+  function stepDensity(dir, x, y) {
+    const i = DENSITIES.indexOf(currentDensity());
+    setDensity(DENSITIES[Math.max(0, Math.min(DENSITIES.length - 1, (i < 0 ? 2 : i) + dir))], x, y, x != null ? 'zoom' : 'slide');
+  }
+  let zoomAcc = 0, zoomAt = 0, zoomLockUntil = 0;
+  contentEl.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();   // 不让 WebView 把整个界面放大
+    const now = performance.now();
+    if (now < zoomLockUntil) return;   // 刚跳过一级：这一下手势剩下的滚动不再连跳
+    if (now - zoomAt > 400) zoomAcc = 0;
+    zoomAt = now;
+    zoomAcc += e.deltaY * (e.deltaMode === 1 ? 33 : 1);
+    if (Math.abs(zoomAcc) < 60) return;
+    stepDensity(zoomAcc < 0 ? 1 : -1, e.clientX, e.clientY);
+    zoomAcc = 0;
+    zoomLockUntil = now + 250;   // 一次手势只跳一级，避免一下子从迷你冲到大图
+  }, { passive: false });
+  document.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    const k = e.key;
+    if (!['=', '+', '-', '_', '0'].includes(k)) return;
+    e.preventDefault();   // 任何时候都不让 WebView 把整个界面放大/缩小/复位(桌面软件里误触很突兀)
+    if (fpOverlay.classList.contains('open') || compareOverlay.classList.contains('open')) return;
+    if (document.querySelector('.modal-backdrop:not(.hidden)')) return;
+    if (k === '=' || k === '+') stepDensity(1);
+    else if (k === '-' || k === '_') stepDensity(-1);
+  });
+  // 鼠标在侧栏/工具栏上按 Ctrl+滚轮也不缩放整个界面(网格区和全屏里各有自己的缩放)
+  document.addEventListener('wheel', (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+  // 密度/窗口宽度变化：网格缩略图可能要换档(256 ↔ 512)
+  document.addEventListener('sg-density', () => retierThumbs());
+  let retierTimer = 0;
+  window.addEventListener('resize', () => { clearTimeout(retierTimer); retierTimer = setTimeout(retierThumbs, 200); });
+
+// 侧边栏：存储卡剩余空间 / 约还能拍张数
+(function () {
+  const btn = document.getElementById('btn-reimport');
+  if (!btn || !btn.parentNode) return;
+  const box = document.createElement('div');
+  box.className = 'card-space';
+  box.id = 'card-space';
+  box.style.display = 'none';
+  btn.parentNode.insertBefore(box, btn);
+
+  async function refreshCardSpace() {
+    try {
+      const res = await window.pywebview.api.card_space();
+      const cards = (res && res.cards) || [];
+      box.textContent = '';
+      for (const c of cards) {
+        const row = document.createElement('div');
+        row.className = 'cs-row';
+        const txt = document.createElement('div');
+        let s = '存储卡 ' + c.drive + ' · 剩余 ' + c.free_gb + ' GB';
+        if (c.shots_left != null) s += ' · 约 ' + c.shots_left + ' 张';
+        txt.textContent = s;
+        const bar = document.createElement('div');
+        bar.className = 'cs-bar';
+        const fill = document.createElement('div');
+        const freeRatio = c.total_gb > 0 ? c.free_gb / c.total_gb : 1;
+        fill.className = 'cs-fill' + (freeRatio < 0.1 ? ' low' : '');
+        fill.style.width = Math.max(0, Math.min(100, (1 - freeRatio) * 100)) + '%';
+        bar.appendChild(fill);
+        row.appendChild(txt);
+        row.appendChild(bar);
+        box.appendChild(row);
+      }
+      box.style.display = cards.length ? '' : 'none';
+    } catch (e) {
+      box.style.display = 'none';
+    }
+  }
+  window.refreshCardSpace = refreshCardSpace;
+
+  function start() {
+    refreshCardSpace();
+    setInterval(refreshCardSpace, 20000);
+  }
+  if (window.pywebview && window.pywebview.api) start();
+  else window.addEventListener('pywebviewready', start);
+
+  const orig = window.reloadPhotos;
+  if (typeof orig === 'function') {
+    window.reloadPhotos = function () {
+      const r = orig.apply(this, arguments);
+      refreshCardSpace();
+      return r;
+    };
+  }
+})();
   if (window.pywebview && window.pywebview.api) initFromBackend();
   else window.addEventListener('pywebviewready', initFromBackend);
 })();

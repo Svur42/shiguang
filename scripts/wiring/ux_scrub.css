@@ -1,0 +1,30 @@
+/* ── 时间刻度(见 ux_scroll.js)：鼠标移到右侧滚动条附近时出现。没有底板、不挡照片——
+ * 滚动条轨道里每个拍摄日期一个小圆点(拖到这里就是这一天)，旁边一列日期全部写出来，挤的地方
+ * 自动错开并用细线连回各自的圆点；日期是可以点的小胶囊，点了平滑滚到那一天。当前那天主题蓝。 ── */
+.sg-ruler {
+  position: absolute; right: 0; z-index: 32; width: 140px; pointer-events: none;
+  opacity: 0; transform: translateX(6px);
+  transition: opacity 200ms ease, transform 380ms var(--spring-snappy);
+}
+.sg-ruler.show { opacity: 1; transform: none; }
+.sg-ruler-links { position: absolute; left: 0; top: 0; overflow: visible; }
+.sg-ruler-links path { fill: none; stroke: color-mix(in oklab, var(--fg), transparent 70%); stroke-width: 1; }
+.sg-ruler-dot {
+  position: absolute; right: 5px; width: 4px; height: 4px; margin-top: -2px; border-radius: 50%;
+  background: color-mix(in oklab, var(--fg), transparent 55%);
+  transition: transform 260ms var(--spring-bouncy), background 160ms ease;
+}
+.sg-ruler-dot.current { background: var(--accent); transform: scale(1.7); }
+.sg-ruler-mark {
+  position: absolute; right: 20px; transform: translateY(-50%);
+  border: none; padding: 3px 8px; border-radius: 999px; cursor: pointer; pointer-events: none;
+  font: 600 11px/1.15 var(--font-body); letter-spacing: 0.01em; white-space: nowrap;
+  color: var(--fg-2);
+  background: color-mix(in oklab, var(--bg) 78%, transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(1.6); backdrop-filter: blur(10px) saturate(1.6);
+  box-shadow: 0 0 0 0.5px color-mix(in oklab, var(--fg), transparent 86%), 0 2px 8px rgba(0, 0, 0, 0.10);
+  transition: background 140ms ease, color 140ms ease, box-shadow 160ms ease;
+}
+.sg-ruler.show .sg-ruler-mark { pointer-events: auto; }
+.sg-ruler-mark:hover { background: color-mix(in oklab, var(--accent), transparent 84%); color: var(--accent); }
+.sg-ruler-mark.current { background: var(--accent); color: #fff; box-shadow: 0 2px 10px color-mix(in oklab, var(--accent), transparent 55%); }

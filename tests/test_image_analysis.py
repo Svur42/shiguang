@@ -58,3 +58,28 @@ def test_make_overlay_returns_jpeg_bytes():
     out = Image.open(io.BytesIO(overlay))
     assert out.format == "JPEG"
     assert out.size == (200, 100)
+
+
+def _png_bytes(arr):
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _big_textured_white(w=1200, h=800):
+    yy, xx = np.mgrid[0:h, 0:w]
+    tex = 244 + 10 * np.sin(xx / 1.9) * np.cos(yy / 2.7)
+    return np.clip(np.stack([tex] * 3, axis=-1), 0, 255).astype(np.uint8)
+
+
+def test_clipping_ignores_white_with_texture():
+    """大图(详情面板用 2560 预览)上，白色但有纹理的区域不标红。"""
+    clip = ia.clipping(_png_bytes(_big_textured_white()))
+    assert clip["over_pct"] < 2
+
+
+def test_clipping_counts_flat_blown_region_with_exact_edges():
+    arr = _big_textured_white()
+    arr[:200] = 255                       # 上方 1/4 平平一片死白
+    clip = ia.clipping(_png_bytes(arr))
+    assert 22 <= clip["over_pct"] <= 26

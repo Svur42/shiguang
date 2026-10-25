@@ -41,6 +41,29 @@ def times(old, new, expect, label):
     applied.append(f"{label}(x{expect})")
 
 
+def block(start, end, new, label):
+    """整段替换：从 start 锚点(含)到 end 锚点(不含，end 保留)之间的全部内容换成 new。
+    两个锚点都必须唯一且 end 在 start 之后——用来整段换掉大函数，不必逐字复刻函数体当锚点。"""
+    global html
+    for name, s in (("start", start), ("end", end)):
+        n = html.count(s)
+        if n != 1:
+            raise SystemExit(f"[失败] {label}: {name} 锚点期望1处，实际{n}处：\n  {s[:80]!r}")
+    i, j = html.index(start), html.index(end)
+    if j <= i:
+        raise SystemExit(f"[失败] {label}: end 锚点出现在 start 之前")
+    html = html[:i] + new + html[j:]
+    applied.append(label)
+
+
+WIRING_DIR = Path(__file__).resolve().parent / "wiring"
+
+
+def wiring(name):
+    """读 scripts/wiring/ 下的大段新代码(独立成文件便于维护，由下面的 Y 段拼进去)。"""
+    return (WIRING_DIR / name).read_text(encoding="utf-8")
+
+
 # ══════════ A. 数据接线（替代写死的假数据/假交互）══════════
 
 # A1. 5处缩略图地址(普通卡4 + 堆叠展开成员1) → 真实http地址
@@ -328,19 +351,23 @@ once(
     buildHist('#hist-g', preset.map(v => v * 1.0), 'var(--chan-g)');
     buildHist('#hist-b', preset.map(v => v * 0.8), 'var(--chan-b)');
     refreshExpoSpots(p);""",
-    """    // 真实直方图 + 过曝欠曝占比：异步拿真实数据填（fpPhotoId===id 防切走）
-    window.pywebview.api.get_analysis(id).then(res => {
-      if (fpPhotoId !== id || !res || res.histograms == null) return;
+    """    // 真实直方图 + 高光/阴影修剪与噪点：等这张的屏幕预览备好后再要(眼前这张的清晰图优先；
+    // RAW 实测要读整张 RAW，不能和它抢读卡)。fpPhotoId===id 防切走
+    // 切图时先清掉上一张的直方图与说明，免得等测量的几秒里一直显示别的照片的数据
+    ['#hist-main', '#hist-r', '#hist-g', '#hist-b'].forEach(s => { el(s).innerHTML = ''; });
+    el('#expo-note').textContent = '测量中…';
+    fpRequest(id, 1).then(() => (fpPhotoId === id ? window.pywebview.api.get_analysis(id) : null)).then(res => {
+      if (fpPhotoId !== id) return;
+      if (!res || res.histograms == null) { el('#expo-note').textContent = '这张照片暂时无法分析(原文件不在?)。'; return; }
       buildHist('#hist-main', res.histograms.main, 'var(--fg-2)');
       buildHist('#hist-r', res.histograms.r, 'var(--chan-r)');
       buildHist('#hist-g', res.histograms.g, 'var(--chan-g)');
       buildHist('#hist-b', res.histograms.b, 'var(--chan-b)');
       window.__expoOverlay = window.__expoOverlay || {};
       window.__expoOverlay[id] = res.overlay_url;
+      if (el('#expo-switch').classList.contains('on') && res.overlay_url) fpImage.style.backgroundImage = `url('${res.overlay_url}')`;   // 等待期间开了开关：补应用
       const note = document.getElementById('expo-note');
-      if (note) note.textContent = (res.over_pct > 0 || res.under_pct > 0)
-        ? `高光溢出约 ${res.over_pct}%，暗部无细节约 ${res.under_pct}%。少量溢出(天空/反光/太阳)属正常，只有落在主体上才值得注意。开启开关可高亮查看位置。`
-        : '未检测到明显高光溢出或暗部死黑。';
+      if (note) note.textContent = fpExpoNote(res);
     });
     refreshExpoSpots(p);""",
     "详情真实直方图+过曝占比",
@@ -2028,6 +2055,396 @@ once(
     });""",
     "退出前flush-文件夹删除注册清单",
 )
+
+# ══════════ Y. 2026-10 体验大修（用户授权：审美与优化全权交给我；参考苹果相册的交互与动效）══════════
+# 真机反馈的问题与对应改法：
+#  · 展开/收起堆叠整屏闪白、页面被推着往下滑 → 展开/收起只改这一堆自己的 DOM；关掉滚动锚定；
+#    被挤开的卡片用弹簧平滑让位(FLIP，只动视口附近的)；发牌/飞回动画改成弹簧物理。
+#  · 快速滑动大片空白 → 缩略图加载引擎(已加载的重绘直接贴、离视口近的优先、最多6并发、
+#    划走的作废) + 后端后台预生成(warm_thumbnails)。
+#  · 堆叠只在"全部"里能用 → 任何视图都按"本组里可见的成员"成堆。
+#  · 日期组头加勾选圈(整组/这段时间全选)；分类视图里每个档位再按天分组。
+#  · 工具栏太挤 → 删除/对比/取消选择挪进底部浮动选择栏(新增批量标档)；机型筛选改下拉菜单。
+#  · 全屏：从缩略图飞出/飞回、滚轮按光标位置缩放、双击放大、翻页滑入、删除后直接看下一张。
+# 大段新代码在 scripts/wiring/*.css|js，这里只负责按锚点拼接。
+
+# Y0. 偏好设置持久化：pywebview 默认每次启动都是全新无痕浏览器配置，localStorage 关掉就丢
+#     (深色模式、网格密度、"记住我的选择"、一键全选档位每次重开都被忘)。改走 sgPrefs：值存后端
+#     prefs.json，启动时 app.py 写出 prefs.js 供 <head> 同步加载。要在 Y2 注入 sgPrefs 之前替换，
+#     免得把 sgPrefs 自己内部对 localStorage 的兜底调用也换掉。
+once("<title>拾光 ShiGuang · RAW 照片质量筛选</title>",
+     "<title>拾光 ShiGuang · RAW 照片质量筛选</title>\n<script src=\"prefs.js\"></script>",
+     "Y0a 启动同步加载偏好")
+times("localStorage.getItem(", "sgPrefs.getItem(", 4, "Y0b 偏好读取走 sgPrefs")
+times("localStorage.setItem(", "sgPrefs.setItem(", 4, "Y0c 偏好写入走 sgPrefs")
+
+# Y1. 样式：追加到样式表末尾(同名规则后写者胜，覆盖工作台原样式)
+once("</style>\n</head>", wiring("ux_style.css") + wiring("ux_scrub.css") + "</style>\n</head>", "Y1 体验大修样式")
+
+# Y2. 基础设施(弹簧动画/缩略图加载引擎/FLIP)：紧跟 contentEl 定义之后
+once(
+    "  const contentEl = el('#content');\n",
+    "  const contentEl = el('#content');\n" + wiring("ux_core.js"),
+    "Y2 动效与加载基础设施",
+)
+
+# Y3. 选择：旧 refreshToolbar(只刷工具栏计数) → 选中状态/组头/选择栏统一刷新
+block("  function refreshToolbar() {", "  function renderFolderNav() {", wiring("ux_selection.js"), "Y3 选择状态与选择栏")
+
+# Y4. 网格渲染：cardHTML…applyStackExpandSpans 整段换成新渲染(按天分组+组头勾选+任意视图堆叠)
+block("  function cardHTML(p) {", "  // disabled + explains why when there's nothing left to fold",
+      wiring("ux_render.js"), "Y4 网格渲染重写")
+
+# Y5. 网格交互：旧的堆叠增删/整屏FLIP/发牌收回/单击双击 整段换成新交互(只改这一堆的 DOM)
+block("  // expand/collapse a stack, reassign which member is \"keep\", or delete",
+      "  el('#tier-nav').addEventListener('click', (e) => {", wiring("ux_interact.js"), "Y5 网格交互重写")
+
+# Y6. 视图切换类操作：内容区淡入+回到顶部(而不是硬切、停在随机位置)
+once(
+    """  el('#toolbar-stack-toggle').addEventListener('click', () => {
+    state.stackMode = !state.stackMode;
+    render();
+  });""",
+    """  el('#toolbar-stack-toggle').addEventListener('click', () => {
+    state.stackMode = !state.stackMode;
+    renderWithFade();
+  });""",
+    "Y6a 折叠开关淡入",
+)
+once("    state.filter = btn.dataset.filter;\n    render();\n  });",
+     "    state.filter = btn.dataset.filter;\n    renderWithFade({ toTop: true });\n  });", "Y6b 档位切换淡入")
+once("    isCombinedView = false; // navigating directly always leaves combine mode\n    render();\n  });",
+     "    isCombinedView = false; // navigating directly always leaves combine mode\n    renderWithFade({ toTop: true });\n  });",
+     "Y6c 文件夹切换淡入")
+once("      render();\n      return;\n    }\n    if (e.target.closest('[data-multi-folder]')) return;",
+     "      renderWithFade({ toTop: true });\n      return;\n    }\n    if (e.target.closest('[data-multi-folder]')) return;",
+     "Y6d 合并显示淡入")
+# Y6e. (第二轮)"分类视图"去掉：左侧 废片/可修/精选 本身就是按档位看，分类视图与之重复(用户反馈)
+once("  const viewSeg = initSlidingSegmented(el('#view-toggle'), (item) => {\n    state.view = item.dataset.view;\n    render();\n  });\n",
+     "", "Y6e 去掉时间/分类视图切换")
+
+# Y7. 一键全选：只选"当前范围"(文件夹/搜索/机型)里的该档——以前会把别的文件夹里看不见的也选上
+once(
+    """    PHOTOS.filter(p => p.tier === state.selectAllTier).forEach(p => state.selected.add(p.id));
+    render();
+    showToast(`已选中全部「${TIER_LABEL[state.selectAllTier]}」照片`);""",
+    """    const ids = scopeList().filter(p => p.tier === state.selectAllTier).map(p => p.id);
+    ids.forEach(id => state.selected.add(id));
+    refreshSelectionUI();
+    showToast(ids.length ? `已选中当前范围内的「${TIER_LABEL[state.selectAllTier]}」${ids.length} 张`
+                         : `当前范围内没有「${TIER_LABEL[state.selectAllTier]}」照片`);""",
+    "Y7 一键全选限当前范围",
+)
+
+# Y8. 工具栏瘦身：取消选择/对比/删除 挪进底部选择栏；机型筛选显示为下拉
+block('        <button class="btn btn-sm" id="btn-clear-sel"', '        <button class="theme-dip" id="btn-theme"', "",
+      "Y8a 工具栏移除选择类按钮")
+block("  el('#btn-delete').addEventListener('click', () => {", "  // ── import modal ─", "",
+      "Y8b 移除旧删除/取消选择监听")
+once("  el('#btn-compare').addEventListener('click', openCompare);",
+     "  el('#sel-compare').addEventListener('click', openCompare);", "Y8c 对比改由选择栏触发")
+once(
+    '      <div class="content" id="content" data-od-id="gallery-grid"></div>',
+    '''      <div class="content" id="content" data-od-id="gallery-grid"></div>
+      <div class="sel-bar" id="sel-bar" role="toolbar" aria-label="已选照片操作" aria-hidden="true">
+        <button class="sel-bar-btn sel-bar-close" id="sel-clear" title="取消选择 (Esc)" aria-label="取消选择">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+        <span class="sel-bar-count">已选 <b id="sel-num">0</b> 张</span>
+        <span class="sel-bar-sep"></span>
+        <span class="sel-bar-label">标为</span>
+        <button class="sel-bar-btn" data-set-tier="bad" title="标为废片 (1)"><i class="dot bad"></i>废片</button>
+        <button class="sel-bar-btn" data-set-tier="fix" title="标为可修 (2)"><i class="dot fix"></i>可修</button>
+        <button class="sel-bar-btn" data-set-tier="good" title="标为精选 (3)"><i class="dot good"></i>精选</button>
+        <span class="sel-bar-sep"></span>
+        <button class="sel-bar-btn" id="sel-compare" title="同屏对比所选照片">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="7" height="14" rx="1"/><rect x="14" y="5" width="7" height="14" rx="1"/></svg>对比
+        </button>
+        <button class="sel-bar-btn sel-danger" id="sel-delete" title="删除所选 (Delete)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2m-9 0 1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/></svg>删除
+        </button>
+      </div>''',
+    "Y8d 底部浮动选择栏",
+)
+once(
+    '<span id="filter-label">筛选 · 全部机型</span>\n',
+    '<span id="filter-label">全部机型</span>\n          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:11px;height:11px;margin-left:-2px;"><path d="M6 9l6 6 6-6"/></svg>\n',
+    "Y8e 机型按钮显示为下拉",
+)
+block(
+    "  // 按机型筛选：点击循环切换 全部机型→各机型→全部",
+    "  document.querySelectorAll('#density-toggle .seg-item')",
+    """  // 按机型筛选：下拉菜单列出图库里出现过的机型(带张数)，选中即筛选(以前要一下下循环点)
+  (function () {
+    const bf = document.getElementById('btn-filter');
+    if (!bf) return;
+    const menu = document.createElement('div');
+    menu.className = 'sg-menu';
+    menu.id = 'camera-menu';
+    document.body.appendChild(menu);
+    const close = () => menu.classList.remove('open');
+    function open() {
+      const counts = new Map();
+      PHOTOS.forEach(p => { if (p.cam) counts.set(p.cam, (counts.get(p.cam) || 0) + 1); });
+      const rows = [['all', '全部机型', PHOTOS.length]].concat(
+        [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([c, n]) => [c, c, n]));
+      menu.innerHTML = rows.map(([v, label, n]) =>
+        `<button class="sg-menu-item${state.camera === v ? ' selected' : ''}" data-cam="${sgEsc(v)}">${sgEsc(label)}<span class="n">${n}</span></button>`).join('');
+      const r = bf.getBoundingClientRect();
+      menu.style.left = r.left + 'px';
+      menu.style.top = (r.bottom + 6) + 'px';
+      menu.classList.add('open');
+    }
+    bf.addEventListener('click', (e) => { e.stopPropagation(); menu.classList.contains('open') ? close() : open(); });
+    menu.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const it = e.target.closest('[data-cam]');
+      if (!it) return;
+      state.camera = it.dataset.cam;
+      const label = document.getElementById('filter-label');
+      if (label) label.textContent = state.camera === 'all' ? '全部机型' : state.camera;
+      close();
+      renderWithFade({ toTop: true });
+    });
+    document.addEventListener('click', close);
+    window.addEventListener('resize', close);
+  })();
+""",
+    "Y8f 机型筛选下拉菜单",
+)
+
+# Y9. 删除/撤销：消失的照片原地缩小淡出、其余平滑补位；撤销后按拍摄时间放回原位(以前按导入顺序乱插)
+once("    compareIds = compareIds.filter(x => !idSet.has(x));\n    render();\n    renderFolderNav();",
+     "    compareIds = compareIds.filter(x => !idSet.has(x));\n    animateLayoutChange(render);", "Y9a 删除带离场动画")
+once("        PHOTOS = PHOTOS.concat(removed).sort((a, b) => b.id - a.id);\n        render();\n        renderFolderNav();",
+     "        PHOTOS = PHOTOS.concat(removed);\n        sortPhotos();\n        animateLayoutChange(render);",
+     "Y9b 撤销删除按时间放回")
+once("        PHOTOS.push(...removedPhotos);\n", "        PHOTOS.push(...removedPhotos);\n        sortPhotos();\n",
+     "Y9c 撤销移除文件夹按时间放回")
+# Y9d. 删除提交时有文件删不掉(写保护卡/被占用)：后端会保留这些记录并在 failed 里返回——前端
+#      提示原因并重新拉照片，让没删掉的照片回到界面上(而不是看着像删了，下次插卡又冒出来)
+once(
+    "        const res = await window.pywebview.api.delete_photos(ids);\n"
+    "        if (res && res.error) showToast('删除失败：' + res.error);",
+    "        const res = await window.pywebview.api.delete_photos(ids);\n"
+    "        if (res && res.failed && res.failed.length) { showToast(res.error || '部分照片无法删除，已保留'); await window.reloadPhotos(); }\n"
+    "        else if (res && res.error) showToast('删除失败：' + res.error);",
+    "Y9d 删不掉的照片回到界面并提示",
+)
+
+# Y10. 进度：底部白条 → 顶部毛玻璃进度胶囊(不和底部提示/选择栏抢位置)
+block(
+    "  function sgProgress(done, total, label) {",
+    "  window.sgProgress = sgProgress;",
+    """  function sgProgress(done, total, label) {
+    let bar = document.getElementById('sg-progress');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'sg-progress';
+      bar.className = 'sg-progress';
+      bar.innerHTML = '<div class="row"><span class="lbl"></span><span class="num"></span></div><div class="bar"><i></i></div>';
+      (document.querySelector('.main') || document.body).appendChild(bar);
+    }
+    const tb = document.querySelector('.toolbar');
+    bar.style.top = ((tb ? tb.offsetHeight : 56) + 12) + 'px';
+    const pct = total > 0 ? Math.round(done / total * 100) : 0;
+    bar.querySelector('.lbl').textContent = label;
+    bar.querySelector('.num').textContent = `${done}/${total} · ${pct}%`;
+    bar.querySelector('.bar > i').style.width = pct + '%';
+    bar.classList.add('show');
+    clearTimeout(bar._t);
+    if (done >= total) bar._t = setTimeout(() => bar.classList.remove('show'), 1200);
+  }
+""",
+    "Y10 顶部进度胶囊",
+)
+
+# Y11. 启动时插着的卡：原来这段在页面解析时就立刻调 popup_cards_now——可 pywebview 的 JS 桥要等
+#      页面加载完才注入，那一刻 window.pywebview 还不存在，调用直接抛错被吞掉：开软件时卡已插着，
+#      既不弹导入小窗、也不同步卡上新照片(潜伏bug)。改成函数，等桥就绪后由 initFromBackend 调用；
+#      已记忆文件夹里新拍的照片同步进来后刷新+提示。
+once(
+    """  (async () => {
+    try { await window.pywebview.api.popup_cards_now(); } catch (e) {}
+  })();""",
+    """  async function startupCardCheck() {
+    try {
+      const r = await window.pywebview.api.popup_cards_now();
+      if (r && r.synced > 0) {
+        await window.reloadPhotos();
+        showToast(`已从存储卡同步 ${r.synced} 张新照片`);
+      }
+    } catch (e) {}
+  }""",
+    "Y11a 启动查卡改为桥就绪后调用",
+)
+once(
+    "      renderFolderNav();\n      // 后台给存量照片补读EXIF拍摄时间",
+    "      renderFolderNav();\n      startupCardCheck();   // JS 桥已就绪：查启动时就插着的卡(新文件夹弹窗+同步新照片)\n      // 后台给存量照片补读EXIF拍摄时间",
+    "Y11b 初始化后查卡",
+)
+
+# Y12. 分析跑完：堆叠可能新成形，整页淡入刷新
+once("    await refreshStacks();\n    render();\n    showToast(`已完成 ${result.analyzed} 张照片的分析`);",
+     "    await refreshStacks();\n    renderWithFade();\n    showToast(`已完成 ${result.analyzed} 张照片的分析`);",
+     "Y12 分析完成淡入刷新")
+
+# Y13. 全屏：从缩略图飞出/飞回、缩放跟手、翻页滑入、删除后看下一张、快捷键
+once(
+    """  function openFullscreenPreview(id) {
+    const p = PHOTOS.find(p => p.id === id);
+    if (!p) return;
+    fpPhotoId = id;
+    fpZoom = 1;
+    fpPan = { x: 0, y: 0 };""",
+    """  function openFullscreenPreview(id, fromThumb) {
+    const p = PHOTOS.find(p => p.id === id);
+    if (!p) return;
+    fpPhotoId = id;
+    fpCancelAnim();
+    fpZoom = 1;
+    fpPan = { x: 0, y: 0 };
+    fpZoomTarget = 1;
+    fpPanTarget = { x: 0, y: 0 };""",
+    "Y13a 全屏打开复位缩放目标",
+)
+once(
+    "    applyFpInfo();   // 按当前 fpInfoOpen 决定详情面板开合(默认关)\n    fpOverlay.classList.add('open');\n  }",
+    """    applyFpInfo();   // 按当前 fpInfoOpen 决定详情面板开合(默认关)
+    const wasOpen = fpOverlay.classList.contains('open');
+    fpOverlay.classList.add('open');
+    if (!wasOpen && fromThumb) heroOpen(fromThumb, p);   // 从缩略图位置放大飞出
+  }""",
+    "Y13b 全屏从缩略图飞出",
+)
+once(
+    """  function closeFullscreenPreview() {
+    fpOverlay.classList.remove('open');
+    fpPhotoId = null;
+  }""",
+    """  function closeFullscreenPreview() {
+    if (!fpOverlay.classList.contains('open')) return;
+    heroClose(PHOTOS.find(x => x.id === fpPhotoId));   // 网格里那张可见时飞回原位
+    fpOverlay.classList.remove('open');
+    fpPhotoId = null;
+    fpCancelAnim();
+  }""",
+    "Y13c 关闭全屏飞回缩略图",
+)
+once(
+    """  if (fpDelete) fpDelete.addEventListener('click', () => {
+    const id = fpPhotoId;
+    if (id == null) return;
+    closeFullscreenPreview();
+    trashPhoto(id);   // 复用单张删除(送回收站+5秒可撤销)
+  });""",
+    "  if (fpDelete) fpDelete.addEventListener('click', () => fpDeleteCurrent());   // 删完直接看下一张",
+    "Y13d 全屏删除后看下一张",
+)
+once("    if (e.key === 'Escape') { closeFullscreenPreview(); return; }",
+     "    if (e.key === 'Escape') { e.preventDefault(); closeFullscreenPreview(); return; }", "Y13e Esc只关全屏不清选择")
+once(
+    "    if (e.key === 'ArrowLeft') { el('#fp-prev').click(); return; }\n    if (e.key === 'ArrowRight') { el('#fp-next').click(); return; }",
+    "    if (e.key === 'ArrowLeft') { fpGo(-1); return; }\n    if (e.key === 'ArrowRight') { fpGo(1); return; }",
+    "Y13f 方向键翻页带过渡",
+)
+once(
+    "    if (/^(INPUT|TEXTAREA)$/.test((e.target && e.target.tagName) || '')) return;\n",
+    """    if (/^(INPUT|TEXTAREA)$/.test((e.target && e.target.tagName) || '')) return;
+    // 空格=关闭(QuickLook 习惯)，Delete=删这张并看下一张，I=开关详情面板
+    if (e.key === ' ') { e.preventDefault(); closeFullscreenPreview(); return; }
+    if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); fpDeleteCurrent(); return; }
+    if (e.key === 'i' || e.key === 'I') { fpToggleInfo.click(); return; }
+""",
+    "Y13g 全屏快捷键",
+)
+once(
+    """  el('#fp-prev').addEventListener('click', () => {
+    const idx = currentVisibleIds.indexOf(fpPhotoId);
+    if (idx > 0) openFullscreenPreview(currentVisibleIds[idx - 1]);
+  });
+  el('#fp-next').addEventListener('click', () => {
+    const idx = currentVisibleIds.indexOf(fpPhotoId);
+    if (idx !== -1 && idx < currentVisibleIds.length - 1) openFullscreenPreview(currentVisibleIds[idx + 1]);
+  });""",
+    "  el('#fp-prev').addEventListener('click', () => fpGo(-1));\n  el('#fp-next').addEventListener('click', () => fpGo(1));",
+    "Y13h 翻页按钮带过渡",
+)
+block("  // wheel over the big image zooms it; once zoomed, drag to pan.",
+      "  // 放大到高倍时按需加载原图(全分辨率)替掉2560预览", wiring("ux_fullscreen.js"), "Y13i 全屏缩放跟手+飞出飞回")
+once("  fpImage.addEventListener('mousedown', (e) => {\n    if (fpZoom <= 1) return;",
+     "  fpImage.addEventListener('mousedown', (e) => {\n    fpCancelAnim();\n    if (fpZoom <= 1) return;",
+     "Y13j 拖动时停掉缩放动画")
+
+# Y14. 关闭确认框：淡出缩小再移除(以前瞬间消失)
+once("      back.remove();\n      doCloseAction(action);", "      sgDismissModal(back);\n      doCloseAction(action);",
+     "Y14a 关闭框退场动画")
+once("    back.addEventListener('click', (e) => { if (e.target === back) back.remove(); });",
+     "    back.addEventListener('click', (e) => { if (e.target === back) sgDismissModal(back); });",
+     "Y14b 点遮罩取消也带动画")
+
+# Y15. 选择栏/快捷键/流式分析/宿主提示：放在初始化之前
+once(
+    "  if (window.pywebview && window.pywebview.api) initFromBackend();",
+    wiring("ux_misc.js") + wiring("ux_scroll.js") + wiring("ux_card.js") + "  if (window.pywebview && window.pywebview.api) initFromBackend();",
+    "Y15 选择栏/快捷键/吸顶/日期标签/网格缩放",
+)
+
+# ══════════ Z. 2026-10 第二轮(用户实机反馈) ══════════
+# Z1. 工具栏：去掉"时间视图/分类视图"切换；密度加一档"迷你"(手机相册那样一屏几十上百张)
+once(
+    '''        <div class="segmented" id="view-toggle" data-od-id="view-toggle">
+          <button class="seg-item active" data-view="time">时间视图</button>
+          <button class="seg-item" data-view="category">分类视图</button>
+        </div>
+''', "", "Z1a 去掉视图切换按钮")
+once('          <button class="seg-item" data-density="compact">紧凑</button>',
+     '          <button class="seg-item" data-density="mini" title="一屏几十上百张，像手机相册 (Ctrl+滚轮 / Ctrl+加减号 缩放网格)">迷你</button>\n'
+     '          <button class="seg-item" data-density="compact">紧凑</button>', "Z1b 密度加迷你档")
+# Z1c. 密度变了通知加载引擎：格子变小/变大时缩略图可能要换 256/512 档
+once("""    document.documentElement.setAttribute('data-density', density);
+    sgPrefs.setItem('shiguang-density', density);
+  }""",
+     """    document.documentElement.setAttribute('data-density', density);
+    sgPrefs.setItem('shiguang-density', density);
+    document.dispatchEvent(new CustomEvent('sg-density'));
+  }""", "Z1c 密度变化通知")
+
+# Z2. 全屏换图：缩略图 → 屏幕预览 → 原图 逐级换清、只升不降、失败重试(fpLoadImage 在 ux_fullscreen.js)
+block("    fpImage.style.backgroundImage = `url('${p.thumbnail || ''}')`;\n    // 切到新照片时复位过曝开关",
+      "    el('#dp-fname').textContent = p.name;",
+      """    // 切到新照片时复位过曝开关（否则开关显示"开"但图是新照片的普通图，状态错位）
+    el('#expo-switch').classList.remove('on');
+    fpLoadImage(p);   // 缩略图 → 屏幕预览 → (放大时)原图，逐级换清
+""", "Z2a 全屏逐级换清")
+block("  // 放大到高倍时按需加载原图(全分辨率)替掉2560预览", "  let fpDrag = null;", "", "Z2b 旧的原图加载换成逐级加载器")
+
+# Z4. 文件夹左滑删除重做：红色胶囊从标签后面 Q 弹地挤出来，过 50% 涨满、桶盖掀开(ux_folder.js)
+block("  // swipe-to-delete a folder row", "  // ── sliding segmented control", wiring("ux_folder.js"), "Z4 文件夹左滑胶囊")
+
+# Z5. 点工具栏切换密度：带方向的滑动过渡(sgSwitchDensity 在 ux_scroll.js)
+once("  const densitySeg = initSlidingSegmented(el('#density-toggle'), (item) => applyDensity(item.dataset.density));",
+     "  const densitySeg = initSlidingSegmented(el('#density-toggle'), (item) => sgSwitchDensity(item.dataset.density));",
+     "Z5 切换密度带滑动过渡")
+
+# Z6. 详情面板：过曝/欠曝改用专业叫法(Adobe 中文界面的"高光修剪/阴影修剪")，图例加"部分通道饱和"
+once("<h4>过曝 / 欠曝标注</h4>", "<h4>高光 / 阴影修剪</h4>", "Z6a 面板标题")
+once('<span class="legend-chip"><span class="legend-dot" style="background:var(--danger)"></span>过曝区域</span>',
+     '<span class="legend-chip"><span class="legend-dot" style="background:var(--danger)"></span>高光修剪</span>'
+     '<span class="legend-chip"><span class="legend-dot" style="background:#ffb020"></span>部分通道饱和</span>', "Z6b 图例高光")
+once('<span class="legend-chip"><span class="legend-dot" style="background:var(--chan-b)"></span>欠曝区域</span>',
+     '<span class="legend-chip"><span class="legend-dot" style="background:var(--chan-b)"></span>阴影修剪</span>', "Z6c 图例阴影")
+once('aria-label="显示过曝/欠曝区域"', 'aria-label="显示高光/阴影修剪区域"', "Z6d 开关说明")
+once("开启后在大图上高亮标注过曝 / 欠曝像素区域。", "开启后在大图上标出细节已经丢失的高光修剪 / 阴影修剪区域。", "Z6e 面板默认说明")
+
+# Z3. 评分算法升级后，旧版评过的照片也算进「开始分析」的张数——按钮上说明为什么(侧栏"待分析"仍是 0)
+once("""    el('#analyze-count').textContent = needs;
+    el('#btn-analyze').disabled = needs === 0;""",
+     """    el('#analyze-count').textContent = needs;
+    el('#btn-analyze').disabled = needs === 0;
+    el('#btn-analyze').title = needs > pending
+      ? `评分算法已更新：其中 ${needs - pending} 张是用旧算法分的档，点一下用新算法重评(你手动改过的档不会变)`
+      : '';""", "Z3 分析按钮说明重评")
 
 DST.write_text(html, encoding="utf-8")
 print(f"[成功] 共套用 {len(applied)} 处接线改动，已写出 {DST}")

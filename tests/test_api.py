@@ -1249,9 +1249,11 @@ def test_handle_card_inserted_known_card_notifies_when_main_hidden(tmp_path, mon
     result = api.handle_card_inserted(drive)
 
     assert result["folders"] == []                    # 无新文件夹(和之前一样)
-    assert len(presented) == 1
-    assert presented[0]["mode"] == "known"
-    assert presented[0]["known_count"] == 1            # 这张卡记忆过1个文件夹
+    # 先立刻弹"已识别·正在检查新照片"，增量同步完再更新成最终结果(两次都是 known 小窗)
+    assert len(presented) == 2
+    assert presented[0]["mode"] == "known" and presented[0]["syncing"] is True
+    assert presented[-1]["mode"] == "known" and presented[-1]["syncing"] is False
+    assert presented[-1]["known_count"] == 1            # 这张卡记忆过1个文件夹
 
 
 def test_handle_card_inserted_known_card_no_popup_when_main_visible(tmp_path, monkeypatch):
@@ -1303,3 +1305,589 @@ def test_prepare_quit_flush_resets_stale_event(tmp_path, monkeypatch):
 
     second = api.prepare_quit_flush()
     assert not second.is_set()   # 新一轮是全新事件，不受上一轮confirm影响
+
+
+# ── 2026-10 体验大修：重插卡增量同步 / 批量改档 / 流式分析 / 后台预生成 ─────────────
+
+def _remembered_card_with_one_photo(tmp_path, monkeypatch):
+    """一张认得的卡(序列号 CARD0001)：DCIM 里 1.jpg 已导入过，现在卡上又多了 2.jpg(新拍的)。"""
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    dcim = tmp_path / "DCIM"; dcim.mkdir()
+    _write_jpeg(dcim / "1.jpg")
+    db.insert_photo(conn, path=str(dcim / "1.jpg"), folder=str(dcim), filename="1.jpg",
+                    is_card=1, card_serial="CARD0001")
+    _write_jpeg(dcim / "2.jpg")   # 插卡后新拍的，库里还没有
+    drive = os.path.splitdrive(os.path.abspath(str(tmp_path)))[0] + os.sep
+    monkeypatch.setattr("shiguang.device_watch.read_volume_serial", lambda root, **k: "CARD0001")
+    monkeypatch.setattr("shiguang.device_watch.find_photo_folders", lambda d: [
+        {"path": str(dcim), "name": "DCIM", "count": 2, "size_mb": 1.0},
+    ])
+    return conn, dcim, drive
+
+
+def test_handle_card_inserted_imports_new_files_in_remembered_folder(tmp_path, monkeypatch):
+    """真机bug：用同一张卡又拍了几张、重插卡——文件夹认得就被当成"无需处理"，新拍的永远进不来。
+    现在：已记忆文件夹做一次增量扫描，只导入库里还没有的新文件，并通知主窗。"""
+    conn, dcim, drive = _remembered_card_with_one_photo(tmp_path, monkeypatch)
+    api = _make_api(conn)
+    refreshed, notes = [], []
+    api.set_import_window_handlers(refresh_main=lambda: refreshed.append(1),
+                                   notify_main=lambda msg: notes.append(msg))
+
+    result = api.handle_card_inserted(drive)
+
+    rows = {r["filename"]: r for r in conn.execute("SELECT * FROM photos")}
+    assert set(rows) == {"1.jpg", "2.jpg"}
+    assert rows["2.jpg"]["is_card"] == 1 and rows["2.jpg"]["card_serial"] == "CARD0001"
+    assert result["synced"] == 1
+    assert refreshed == [1, 1]          # 插卡先刷一次给反馈，同步出新照片后再刷一次
+    assert notes and "1" in notes[0]
+
+
+def test_handle_card_inserted_known_card_hidden_popup_reports_synced(tmp_path, monkeypatch):
+    """主窗缩在托盘时的"已识别"小窗也要告诉用户同步进来几张新照片。"""
+    conn, dcim, drive = _remembered_card_with_one_photo(tmp_path, monkeypatch)
+    api = _make_api(conn)
+    presented = []
+    api.set_window_handlers(is_hidden=lambda: True)
+    api.set_import_window_handlers(present_card=lambda info: presented.append(info),
+                                   refresh_main=lambda: None)
+
+    api.handle_card_inserted(drive)
+
+    assert presented and presented[-1]["mode"] == "known"
+    assert presented[-1]["synced_count"] == 1
+
+
+def test_handle_card_inserted_no_new_files_synced_zero(tmp_path, monkeypatch):
+    """卡上没有新文件：synced=0、不发"同步了N张"的通知(不打扰)。"""
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    dcim = tmp_path / "DCIM"; dcim.mkdir()
+    _write_jpeg(dcim / "1.jpg")
+    db.insert_photo(conn, path=str(dcim / "1.jpg"), folder=str(dcim), filename="1.jpg",
+                    is_card=1, card_serial="CARD0001")
+    drive = os.path.splitdrive(os.path.abspath(str(tmp_path)))[0] + os.sep
+    monkeypatch.setattr("shiguang.device_watch.read_volume_serial", lambda root, **k: "CARD0001")
+    monkeypatch.setattr("shiguang.device_watch.find_photo_folders", lambda d: [])
+    api = _make_api(conn)
+    notes = []
+    api.set_import_window_handlers(refresh_main=lambda: None, notify_main=notes.append)
+
+    result = api.handle_card_inserted(drive)
+
+    assert result["synced"] == 0
+    assert notes == []
+
+
+def test_popup_cards_now_syncs_known_folders(tmp_path, monkeypatch):
+    """开软件时卡已插着：同样增量同步已记忆文件夹里的新文件，返回同步张数给前端刷新。"""
+    conn, dcim, drive = _remembered_card_with_one_photo(tmp_path, monkeypatch)
+    monkeypatch.setattr("shiguang.device_watch.list_removable_drives", lambda *a, **k: [drive])
+    api = _make_api(conn)
+
+    result = api.popup_cards_now()
+
+    assert result["error"] is None
+    assert result["synced"] == 1
+    assert {r["filename"] for r in conn.execute("SELECT filename FROM photos")} == {"1.jpg", "2.jpg"}
+
+
+def test_set_tiers_updates_many_in_one_call(tmp_path, monkeypatch):
+    """选中一批照片一键改档(选择栏的"标为废片/可修/精选")。"""
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    ids = [db.insert_photo(conn, path=f"/x/{i}.jpg", folder="/x", filename=f"{i}.jpg") for i in range(3)]
+    api = _make_api(conn)
+
+    result = api.set_tiers(ids[:2], "good")
+
+    assert result == {"updated": 2, "error": None}
+    tiers = {r["id"]: r["tier"] for r in conn.execute("SELECT id, tier FROM photos")}
+    assert tiers[ids[0]] == "good" and tiers[ids[1]] == "good" and tiers[ids[2]] is None
+
+
+def test_analyze_all_streams_tier_batches(tmp_path, monkeypatch):
+    """设计单：后台分析不阻塞浏览、结果逐步更新——分析中分批把 {id,tier} 推给前端。"""
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    ids = []
+    for i in range(3):
+        p = tmp_path / f"{i}.jpg"
+        _write_jpeg(p, color=(40 * i, 90, 160))
+        ids.append(db.insert_photo(conn, path=str(p), folder=str(tmp_path), filename=f"{i}.jpg"))
+    api = _make_api(conn)
+    fake_window = _FakeWindow(dialog_result=None)
+    monkeypatch.setattr("webview.windows", [fake_window])
+
+    api.analyze_all()
+
+    batches = [c for c in fake_window.evaluate_js_calls if "onAnalyzeBatch(" in c]
+    assert batches
+    pushed = "".join(batches)
+    for pid in ids:
+        assert f'"id": {pid}' in pushed
+
+
+def test_warm_thumbnails_pregenerates_missing_caches(tmp_path, monkeypatch):
+    """后台预生成：按前端给的显示顺序，把还没缓存的512缩略图提前做好(快速滑动不再一片空白)。"""
+    cache_dir = _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    ids = []
+    for i in range(4):
+        p = tmp_path / f"{i}.jpg"
+        _write_jpeg(p, size=(900, 600))
+        ids.append(db.insert_photo(conn, path=str(p), folder=str(tmp_path), filename=f"{i}.jpg"))
+    gone = db.insert_photo(conn, path="/gone/x.jpg", folder="/gone", filename="x.jpg")
+    api = _make_api(conn)
+
+    api.warm_thumbnails(ids + [gone])
+    assert api.wait_warm_idle(timeout=10)
+
+    for pid in ids:
+        assert (cache_dir / f"{pid}.jpg").exists()
+    assert not (cache_dir / f"{gone}.jpg").exists()             # 原文件不在→跳过，不报错
+    assert not list(cache_dir.glob("*.tmp"))                   # 原子写入：不留半截临时文件
+
+
+def test_stop_background_halts_warmer(tmp_path, monkeypatch):
+    """退出时必须先停预生成线程再清缓存，否则边清边写会留下残缺缓存。"""
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    ids = []
+    for i in range(30):
+        p = tmp_path / f"{i}.jpg"
+        _write_jpeg(p, size=(600, 400))
+        ids.append(db.insert_photo(conn, path=str(p), folder=str(tmp_path), filename=f"{i}.jpg"))
+    api = _make_api(conn)
+
+    api.warm_thumbnails(ids)
+    api.stop_background()
+
+    assert api.wait_warm_idle(timeout=5)
+
+
+def test_list_photos_includes_sortable_capture_time(tmp_path, monkeypatch):
+    """前端撤销删除后要按拍摄时间放回原位：list_photos 带上可排序的原始时间 ts(无时间为 None)。"""
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    real = tmp_path / "a.jpg"
+    _write_jpeg(real)
+    conn = db.connect(tmp_path / "test.sqlite")
+    pid = db.insert_photo(conn, path=str(real), folder=str(tmp_path), filename="a.jpg",
+                          metadata={"capture_time": "2026-10-24 09:12:03"})
+    api = _make_api(conn)
+
+    photo = [p for p in api.list_photos() if p["id"] == pid][0]
+
+    assert photo["ts"] == "2026-10-24 09:12:03"
+
+
+def test_set_pref_persists_to_prefs_file(tmp_path, monkeypatch):
+    """pywebview 默认每次启动都是全新无痕配置，localStorage 关掉就丢(深色模式/记住关闭方式都会忘)。
+    偏好改存后端 prefs.json：set_pref 写盘，load_prefs 读回。"""
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    prefs_file = tmp_path / "prefs.json"
+    monkeypatch.setattr(api_module, "PREFS_FILE", prefs_file)
+    conn = db.connect(tmp_path / "test.sqlite")
+    api = _make_api(conn)
+
+    assert api.set_pref("shiguang-theme", "dark") == {"ok": True, "error": None}
+    api.set_pref("shiguang-close-pref", "tray")
+
+    assert api_module.load_prefs() == {"shiguang-theme": "dark", "shiguang-close-pref": "tray"}
+
+
+def test_set_pref_rejects_unknown_keys_and_huge_values(tmp_path, monkeypatch):
+    """只收本软件自己的偏好键(shiguang-*)、限长，防止前端误写/写爆文件。"""
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    monkeypatch.setattr(api_module, "PREFS_FILE", tmp_path / "prefs.json")
+    conn = db.connect(tmp_path / "test.sqlite")
+    api = _make_api(conn)
+
+    assert api.set_pref("other-key", "x")["ok"] is False
+    assert api.set_pref("shiguang-theme", "x" * 5000)["ok"] is False
+    assert api_module.load_prefs() == {}
+
+
+def test_load_prefs_tolerates_corrupt_file(tmp_path, monkeypatch):
+    """prefs.json 坏了(手改/写一半断电)也不能让软件起不来：读不出就当没有偏好。"""
+    bad = tmp_path / "prefs.json"
+    bad.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(api_module, "PREFS_FILE", bad)
+
+    assert api_module.load_prefs() == {}
+
+
+# ── 对抗审查发现的问题(2026-10-25)：先复现再修 ─────────────────────────────
+
+def test_analyze_all_keeps_tier_user_changed_during_analysis(tmp_path, monkeypatch):
+    """审查#1：分析进行中用户把还没轮到的照片标成精选——轮到它时不能被自动档覆盖，
+    推给前端的也必须是写库后的真实档位。"""
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    ids = []
+    for i in range(2):
+        p = tmp_path / f"{i}.jpg"
+        _write_jpeg(p, color=(30 + 60 * i, 90, 160))
+        ids.append(db.insert_photo(conn, path=str(p), folder=str(tmp_path), filename=f"{i}.jpg"))
+    api = _make_api(conn)
+    fake_window = _FakeWindow(dialog_result=None)
+    monkeypatch.setattr("webview.windows", [fake_window])
+    real_score = api_module.scoring.score_image_bytes
+    calls = []
+
+    def score_and_user_edits(image_bytes, iso=None, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            api.set_tier(ids[1], "good")   # 分析第1张时，用户把第2张手动标成精选
+        result = real_score(image_bytes, iso=iso, **kw)
+        result["tier"] = "bad"
+        return result
+
+    monkeypatch.setattr(api_module.scoring, "score_image_bytes", score_and_user_edits)
+
+    api.analyze_all()
+
+    tiers = {r["id"]: r["tier"] for r in conn.execute("SELECT id, tier FROM photos")}
+    assert tiers[ids[1]] == "good"
+    pushed = "".join(c for c in fake_window.evaluate_js_calls if "onAnalyzeBatch(" in c)
+    assert f'{{"id": {ids[1]}, "tier": "good"}}' in pushed
+
+
+def test_thumb_failure_not_marked_when_source_vanished(tmp_path, monkeypatch):
+    """审查#3：读到一半卡被拔(原文件已不在)不是"这张图坏了"，不能打永久失败标记，
+    否则重插卡后这张在本次会话里再也不显示、不参与分析。"""
+    cache_dir = _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    real = tmp_path / "a.jpg"
+    _write_jpeg(real)
+    conn = db.connect(tmp_path / "test.sqlite")
+    pid = db.insert_photo(conn, path=str(real), folder=str(tmp_path), filename="a.jpg")
+    api = _make_api(conn)
+
+    def unplugged(path, max_size=512):
+        os.remove(path)
+        raise OSError("device not ready")
+
+    monkeypatch.setattr(api_module.raw_thumb, "extract_thumbnail", unplugged)
+
+    assert api._thumb_cache_path(pid, str(real)) is None
+    assert not (cache_dir / f"{pid}.failed").exists()
+
+
+def test_thumb_failure_still_marked_when_file_really_broken(tmp_path, monkeypatch):
+    """原文件还在、只是解不出来(真坏了)：照旧打失败标记，免得每次都重解。"""
+    cache_dir = _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    broken = tmp_path / "b.jpg"
+    broken.write_bytes(b"not a jpeg")
+    conn = db.connect(tmp_path / "test.sqlite")
+    pid = db.insert_photo(conn, path=str(broken), folder=str(tmp_path), filename="b.jpg")
+    api = _make_api(conn)
+
+    assert api._thumb_cache_path(pid, str(broken)) is None
+    assert (cache_dir / f"{pid}.failed").exists()
+
+
+def test_stop_background_is_terminal(tmp_path, monkeypatch):
+    """审查#5：退出流程里 stop 之后，前端防抖的 warm 调用、浏览器的按需请求都不能再写缓存
+    (否则可能在清缓存之后又写回文件)。"""
+    cache_dir = _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    real = tmp_path / "a.jpg"
+    _write_jpeg(real)
+    conn = db.connect(tmp_path / "test.sqlite")
+    pid = db.insert_photo(conn, path=str(real), folder=str(tmp_path), filename="a.jpg")
+    api = _make_api(conn)
+
+    api.stop_background()
+    assert api.warm_thumbnails([pid])["queued"] == 0
+    api.ensure_cache_file(f"thumb_cache/{pid}.jpg")
+
+    assert api.wait_warm_idle(timeout=2)
+    assert not (cache_dir / f"{pid}.jpg").exists()
+
+
+def test_set_pref_reports_failure_when_file_cannot_be_replaced(tmp_path, monkeypatch):
+    """审查#6：偏好文件替换失败(被占用)时要如实报失败，不能返回成功却没写进去。"""
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    prefs_file = tmp_path / "prefs.json"
+    prefs_file.write_text('{"shiguang-theme": "light"}', encoding="utf-8")
+    monkeypatch.setattr(api_module, "PREFS_FILE", prefs_file)
+    monkeypatch.setattr(api_module.time, "sleep", lambda s: None)
+    conn = db.connect(tmp_path / "test.sqlite")
+    api = _make_api(conn)
+
+    def locked(src, dst):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(api_module.os, "replace", locked)
+
+    assert api.set_pref("shiguang-theme", "dark")["ok"] is False
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_delete_keeps_record_when_file_could_not_be_removed(tmp_path, monkeypatch):
+    """写保护卡等原因删不掉文件(文件还在)：库记录不能删——否则下次插卡又被当新照片同步回来，
+    而且用户以为删了其实没删。真的已经不在的文件照常清记录。"""
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    stuck = tmp_path / "stuck.jpg"
+    _write_jpeg(stuck)
+    conn = db.connect(tmp_path / "test.sqlite")
+    stuck_id = db.insert_photo(conn, path=str(stuck), folder=str(tmp_path), filename="stuck.jpg")
+    gone_id = db.insert_photo(conn, path=str(tmp_path / "gone.jpg"), folder=str(tmp_path), filename="gone.jpg")
+    api = _make_api(conn)
+
+    def write_protected(path):
+        raise OSError("write protected")
+
+    monkeypatch.setattr(api_module, "send2trash", write_protected)
+
+    result = api.delete_photos([stuck_id, gone_id])
+
+    left = {r["id"] for r in conn.execute("SELECT id FROM photos")}
+    assert left == {stuck_id}
+    assert result["failed"] == [stuck_id]
+    assert result["deleted"] == 1
+
+
+def test_card_insert_gives_feedback_before_slow_sync(tmp_path, monkeypatch):
+    """审查#8：卡上新拍了几百张时，增量同步要逐张读 EXIF(几秒~十几秒)。必须先刷新侧边栏/弹窗
+    给反馈，再慢慢同步；同步完再刷一次并提示。"""
+    conn, dcim, drive = _remembered_card_with_one_photo(tmp_path, monkeypatch)
+    api = _make_api(conn)
+    events = []
+    real_sync = api._sync_known_folders
+
+    def tracked_sync(d, s):
+        events.append("sync")
+        return real_sync(d, s)
+
+    monkeypatch.setattr(api, "_sync_known_folders", tracked_sync)
+    api.set_window_handlers(is_hidden=lambda: True)
+    api.set_import_window_handlers(refresh_main=lambda: events.append("refresh"),
+                                   present_card=lambda info: events.append(("present", info.get("synced_count"), info.get("syncing"))),
+                                   notify_main=lambda msg: events.append("notify"))
+
+    result = api.handle_card_inserted(drive)
+
+    assert result["synced"] == 1
+    assert events.index("refresh") < events.index("sync")              # 先刷新给反馈
+    assert events[0:2] == ["refresh", ("present", 0, True)]            # 托盘里也先弹"正在检查新照片"
+    assert events[-3:] == ["refresh", "notify", ("present", 1, False)]   # 同步完再刷新+提示+更新小窗
+
+
+def test_small_thumb_tier_is_derived_from_512(tmp_path, monkeypatch):
+    """网格小格子用的 256 档：请求时从 512 缩出(512 也没有就先从原图生成 512)。"""
+    cache_dir = _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    small_dir = tmp_path / "thumb256_cache"
+    monkeypatch.setattr(api_module, "THUMB_S_CACHE_DIR", small_dir)
+    real = tmp_path / "a.jpg"
+    _write_jpeg(real, size=(1200, 800))
+    conn = db.connect(tmp_path / "test.sqlite")
+    pid = db.insert_photo(conn, path=str(real), folder=str(tmp_path), filename="a.jpg")
+    api = _make_api(conn)
+
+    api.ensure_cache_file(f"thumb256_cache/{pid}.jpg")
+
+    assert (cache_dir / f"{pid}.jpg").exists()                     # 512 顺带生成(评分/大格子用)
+    small = Image.open(small_dir / f"{pid}.jpg")
+    assert max(small.size) == 256
+
+
+def test_small_thumb_tier_skipped_when_source_gone(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    small_dir = tmp_path / "thumb256_cache"
+    monkeypatch.setattr(api_module, "THUMB_S_CACHE_DIR", small_dir)
+    conn = db.connect(tmp_path / "test.sqlite")
+    pid = db.insert_photo(conn, path=str(tmp_path / "gone.jpg"), folder=str(tmp_path), filename="gone.jpg")
+    api = _make_api(conn)
+
+    api.ensure_cache_file(f"thumb256_cache/{pid}.jpg")   # 不抛异常
+
+    assert not (small_dir / f"{pid}.jpg").exists()
+
+
+def test_analyze_records_score_version(tmp_path, monkeypatch):
+    """分析写下评分算法版本：评完不再算"待分析"；算法再升级时会重新算进来。"""
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    real = tmp_path / "a.jpg"
+    _write_jpeg(real, size=(600, 400))
+    conn = db.connect(tmp_path / "test.sqlite")
+    db.insert_photo(conn, path=str(real), folder=str(tmp_path), filename="a.jpg")
+    api = _make_api(conn)
+    assert api.needs_analysis_count()["count"] == 1
+
+    api.analyze_all()
+
+    assert api.needs_analysis_count()["count"] == 0
+    monkeypatch.setattr(api_module.scoring, "SCORE_VERSION", api_module.scoring.SCORE_VERSION + 1)
+    assert api.needs_analysis_count()["count"] == 1
+
+
+def test_warm_thumbnails_small_tier_also_builds_256(tmp_path, monkeypatch):
+    """网格用小档时，后台预生成顺带把 256 也做好(滚到哪儿都不用等)。"""
+    cache_dir = _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    small_dir = tmp_path / "thumb256_cache"
+    monkeypatch.setattr(api_module, "THUMB_S_CACHE_DIR", small_dir)
+    conn = db.connect(tmp_path / "test.sqlite")
+    ids = []
+    for i in range(3):
+        f = tmp_path / f"p{i}.jpg"
+        _write_jpeg(f, size=(800, 600))
+        ids.append(db.insert_photo(conn, path=str(f), folder=str(tmp_path), filename=f.name))
+    api = _make_api(conn)
+
+    api.warm_thumbnails(ids, True)
+    assert api.wait_warm_idle(10)
+
+    for pid in ids:
+        assert (cache_dir / f"{pid}.jpg").exists() and (small_dir / f"{pid}.jpg").exists()
+
+
+def test_warm_waits_while_foreground_generation_running(tmp_path, monkeypatch):
+    """浏览器/全屏正在要图(前台生成中)时，后台预生成不动手，把读卡带宽让给眼前的。"""
+    import time as _time
+    cache_dir = _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    monkeypatch.setattr(api_module, "WARM_YIELD_SEC", 0.0)
+    conn = db.connect(tmp_path / "test.sqlite")
+    f = tmp_path / "p.jpg"
+    _write_jpeg(f, size=(600, 400))
+    pid = db.insert_photo(conn, path=str(f), folder=str(tmp_path), filename="p.jpg")
+    api = _make_api(conn)
+
+    api._fg_enter()
+    api.warm_thumbnails([pid])
+    _time.sleep(0.4)
+    assert not (cache_dir / f"{pid}.jpg").exists()     # 前台在忙：后台没抢
+    api._fg_exit()
+    assert api.wait_warm_idle(10)
+    assert (cache_dir / f"{pid}.jpg").exists()         # 前台一闲下来就接着做
+
+
+
+def test_analyze_uses_trusted_raw_measurement(tmp_path, monkeypatch):
+    """RAW 文件、预览上有可疑迹象 → 去 RAW 里核实；RAW 实测噪点过重(信噪比 < 11 dB)判废并写明原因。"""
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    nef = tmp_path / "DSC_0001.NEF"
+    nef.write_bytes(b"fake raw")                       # 只要"原文件在"；RAW 测量本身用假结果替代
+    conn = db.connect(tmp_path / "test.sqlite")
+    pid = db.insert_photo(conn, path=str(nef), folder=str(tmp_path), filename=nef.name)
+    db.update_metadata(conn, pid, {"iso": 25600})
+    api = _make_api(conn)
+    api_module.THUMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    import numpy as np
+    idx = (np.arange(512) // 32) % 2
+    board = np.where((idx[:341, None] ^ idx[None, :]).astype(bool), 200, 60).astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(np.stack([board] * 3, axis=-1)).save(buf, format="JPEG", quality=95)
+    (api_module.THUMB_CACHE_DIR / f"{pid}.jpg").write_bytes(buf.getvalue())   # 锐利、曝光正常的预览
+    seen = {}
+
+    def fake_measure(path, jpeg_rgb=None, iso=None, want_masks=False):
+        seen["iso"] = iso
+        return {"trusted": True, "hl_clip_pct": 0.0, "color_clip_pct": 0.0, "shadow_pct": 0.0,
+                "snr_scene_db": 8.0, "snr18_db": 14.0, "rot": 0}
+
+    monkeypatch.setattr(api_module.raw_analysis, "measure_raw", fake_measure)
+    captured = {}
+    real_score = api_module.scoring.score_image_bytes
+
+    def spy(image_bytes, **kw):
+        r = real_score(image_bytes, **kw)
+        captured.update(r)
+        return r
+
+    monkeypatch.setattr(api_module.scoring, "score_image_bytes", spy)
+    monkeypatch.setattr("webview.windows", [_FakeWindow(dialog_result=None)])
+
+    api.analyze_all()
+
+    assert seen["iso"] == 25600                        # 高 ISO → 读了 RAW
+    assert captured["tier"] == "bad" and "噪点" in captured["reason"]
+    assert captured["metrics"]["measured_on"] == "raw"
+
+
+def test_untrusted_raw_falls_back_to_preview(tmp_path, monkeypatch):
+    """RAW 解出来和预览对不上(新机型/特殊压缩)：不用 RAW 结果，绝不拿解坏的数据判废。"""
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    nef = tmp_path / "DSC_0002.NEF"
+    nef.write_bytes(b"fake raw")
+    conn = db.connect(tmp_path / "test.sqlite")
+    pid = db.insert_photo(conn, path=str(nef), folder=str(tmp_path), filename=nef.name)
+    db.update_metadata(conn, pid, {"iso": 25600})
+    api = _make_api(conn)
+    monkeypatch.setattr(api_module.raw_analysis, "measure_raw",
+                        lambda *a, **k: {"trusted": False, "snr_scene_db": 3.0, "hl_clip_pct": 90.0,
+                                         "color_clip_pct": 0.0, "shadow_pct": 0.0, "snr18_db": 3.0, "rot": 0})
+    raw, is_raw = api._raw_check(str(nef), _jpeg_bytes((120, 120, 120), (512, 341)), 25600)
+    assert raw is None and is_raw is True
+
+
+def test_card_space_computes_avg_and_shots_left(tmp_path, monkeypatch):
+    """假卡(tmp_path)+假 disk_usage：avg_mb 与 shots_left 按库内照片实际大小算。"""
+    from collections import namedtuple
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    card = tmp_path / "card"
+    card.mkdir()
+    conn = db.connect(tmp_path / "test.sqlite")
+    mb = 1024 * 1024
+    for i, size in enumerate((10 * mb, 30 * mb)):
+        f = card / f"DSC_{i}.NEF"
+        f.write_bytes(b"\0" * size)
+        db.insert_photo(conn, path=str(f), folder=str(card), filename=f.name)
+    db.insert_photo(conn, path=str(card / "gone.NEF"), folder=str(card), filename="gone.NEF")
+    Usage = namedtuple("Usage", "total used free")
+    monkeypatch.setattr(api_module.device_watch, "list_removable_drives", lambda: [str(card) + os.sep])
+    monkeypatch.setattr(api_module.shutil, "disk_usage",
+                        lambda root: Usage(64 * 1024 ** 3, 44 * 1024 ** 3, 20 * 1024 ** 3))
+    res = _make_api(conn).card_space()
+    assert res["error"] is None and len(res["cards"]) == 1
+    c = res["cards"][0]
+    assert c["avg_mb"] == 20.0
+    assert c["free_gb"] == 20.0 and c["total_gb"] == 64.0
+    assert c["shots_left"] == 1024
+
+
+def test_card_space_no_cards(tmp_path, monkeypatch):
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    monkeypatch.setattr(api_module.device_watch, "list_removable_drives", lambda: [])
+    assert _make_api(conn).card_space() == {"cards": [], "error": None}
+
+
+def test_raw_reads_stop_for_a_model_that_never_decodes(tmp_path, monkeypatch):
+    """同一机型连续 3 张 RAW 都解不对：之后这个机型不再读 RAW(省下每张几百毫秒的读卡和计算)。"""
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    api = _make_api(conn)
+    calls = []
+    monkeypatch.setattr(api_module.raw_analysis, "measure_raw",
+                        lambda *a, **k: calls.append(1) or {"trusted": False})
+    dark = _jpeg_bytes((20, 20, 20), (512, 341))          # 很暗 → 值得去 RAW 核实
+    for i in range(6):
+        f = tmp_path / f"{i}.NEF"
+        f.write_bytes(b"x")
+        api._raw_check(str(f), dark, 800, cam="NIKON Z 50_2")
+    assert len(calls) == 3
+    f = tmp_path / "other.NEF"
+    f.write_bytes(b"x")
+    api._raw_check(str(f), dark, 800, cam="NIKON Z 6_3")   # 别的机型照常检查
+    assert len(calls) == 4
+
+
+def test_analyze_all_parallel_scores_every_photo(tmp_path, monkeypatch):
+    """线程池并行分析：每张都评到、都写库，进度推到 total/total。"""
+    _use_isolated_thumb_cache(monkeypatch, tmp_path)
+    conn = db.connect(tmp_path / "test.sqlite")
+    for i in range(12):
+        f = tmp_path / f"{i}.jpg"
+        _write_jpeg(f, color=(10 * i, 100, 150), size=(300, 200))
+        db.insert_photo(conn, path=str(f), folder=str(tmp_path), filename=f.name)
+    api = _make_api(conn)
+    fake = _FakeWindow(dialog_result=None)
+    monkeypatch.setattr("webview.windows", [fake])
+
+    res = api.analyze_all()
+
+    assert res["analyzed"] == 12
+    assert conn.execute("SELECT COUNT(*) FROM photos WHERE tier IS NULL").fetchone()[0] == 0
+    assert any("onAnalyzeProgress(12, 12)" in c for c in fake.evaluate_js_calls)

@@ -302,3 +302,18 @@ def test_rebind_card_paths_noop_same_drive(tmp_path):
     db.insert_photo(conn, path=r"F:\DCIM\1.jpg", folder=r"F:\DCIM", filename="1.jpg",
                     is_card=1, card_serial="AAAA1111")
     assert db.rebind_card_paths(conn, "AAAA1111", "F:") == (0, 0)
+
+
+def test_old_score_version_counts_as_needing_analysis(tmp_path):
+    """评分算法升级后：用旧版评的照片算进"待分析"，用新版评过的不算；手动改过的档重评时保留。"""
+    conn = db.connect(tmp_path / "test.sqlite")
+    a = db.insert_photo(conn, path="/f/a.jpg", folder="/f", filename="a.jpg")
+    b = db.insert_photo(conn, path="/f/b.jpg", folder="/f", filename="b.jpg")
+    db.set_analysis_auto(conn, a, "bad", phash="00ff", focus_score=1.0, score_ver=2)
+    db.set_analysis_auto(conn, b, "bad", phash="00ff", focus_score=1.0)        # 旧代码写的：无版本
+    assert {r["id"] for r in db.list_needs_analysis(conn, 2)} == {b}
+    assert db.needs_analysis_count(conn, 2) == 1
+    assert db.needs_analysis_count(conn, 3) == 2                               # 再升级一次：都要重评
+    db.set_manual_tiers(conn, [a], "good")                                     # 用户手动改成精选
+    assert db.set_analysis_auto(conn, a, "fix", phash="00ff", focus_score=1.0, score_ver=3) == "good"
+    assert db.needs_analysis_count(conn, 3) == 1
