@@ -6,3 +6,5 @@ pytest==8.3.2
 numpy<2
 Send2Trash==1.8.3
 ExifRead==3.0.0
+# 系统托盘图标（最小化到托盘后台常驻 + 插卡检测）
+pystray==0.19.5
